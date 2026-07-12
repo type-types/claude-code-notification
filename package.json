@@ -1,0 +1,30 @@
+{
+  "name": "claude-code-notification",
+  "version": "0.1.0",
+  "description": "Claude Code notification overlay for macOS",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "build": "electron-builder --mac dir"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.type.claude-code-notification",
+    "productName": "CC Notify",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    }
+  }
+}
