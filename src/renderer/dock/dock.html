@@ -18,7 +18,7 @@
     position: absolute;
     top: 14px;
     right: 0;
-    width: 240px;
+    width: 148px;
     box-sizing: border-box;
     display: flex;
     align-items: stretch;
@@ -26,7 +26,7 @@
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(0, 0, 0, 0.2);
     border-right: none;
-    transform: translateX(214px);
+    transform: translateX(122px);
     transition: transform 0.22s ease;
     z-index: 5;
   }
@@ -56,13 +56,24 @@
     min-width: 0;
     display: flex;
     align-items: center;
-    gap: 8px;
     padding: 9px 12px;
   }
+  /* 투명도 슬라이더: 얇은 트랙과 작은 막대형 손잡이 */
   #op {
+    -webkit-appearance: none;
     flex: 1;
     min-width: 0;
-    accent-color: #0a60c2;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.22);
+    outline: none;
+  }
+  #op::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 5px;
+    height: 13px;
+    border-radius: 3px;
+    background: #0a60c2;
   }
   /* 카드: 각자 저장된 세로 위치(top)에 자유 배치된다. 평소에는 오른쪽으로
      밀려 들어가 왼쪽 가장자리 16px만 보이고, hover / 전체 펼침 / 알림 시
@@ -97,6 +108,9 @@
   }
   .card.out {
     transform: translateX(0);
+  }
+  .card.stale {
+    opacity: 0.45;
   }
   /* 드래그 중인 카드는 애니메이션 없이 커서를 그대로 따라간다 */
   .card.dragging {
@@ -209,18 +223,10 @@
     c.el.classList.toggle('out', !!out);
   }
 
-  // 투명도는 알림 없는 카드에만 적용해서, 알림은 항상 선명하게 보이게 한다.
-  // 컨트롤 패널(슬라이더 포함)도 같은 투명도를 따른다.
-  function applyOpacity(c) {
-    if (c.state && c.state.alert) {
-      c.el.style.opacity = '';
-      return;
-    }
-    c.el.style.opacity = String(opacity * (c.state && c.state.stale ? 0.45 : 1));
-  }
-
-  function applyCtrlOpacity() {
-    ctrl.style.opacity = String(opacity);
+  // 투명도는 전역 하나로, body에 한 번만 적용해서 카드와 컨트롤 패널이
+  // 항상 똑같이 변하게 한다. 유휴(stale) 카드의 추가 감쇠는 CSS가 곱한다.
+  function applyGlobalOpacity() {
+    document.body.style.opacity = String(opacity);
   }
 
   toggle.addEventListener('click', () => {
@@ -235,8 +241,7 @@
     opacity = Number(opSlider.value) / 100;
     opTouchedAt = Date.now();
     window.api.setOpacity(opacity);
-    applyCtrlOpacity();
-    for (const c of cards.values()) applyOpacity(c);
+    applyGlobalOpacity();
   });
 
   // 화면 표시용 배치: 저장 위치(baseY)를 그대로 쓰되, 알림으로 카드가
@@ -386,7 +391,7 @@
     if (Date.now() - opTouchedAt > 2000) {
       opacity = state.opacity || 1;
       opSlider.value = String(Math.round(opacity * 100));
-      applyCtrlOpacity();
+      applyGlobalOpacity();
     }
 
     const seen = new Set();
@@ -411,10 +416,10 @@
       c.err.textContent = s.err || '';
       c.el.classList.toggle('alert', !!s.alert);
       c.el.classList.toggle('input', s.kind === 'input');
+      c.el.classList.toggle('stale', !!s.stale);
       // 내용에 따라 달라진 폭을 재서, 접혔을 때 밀어넣는 거리를 갱신한다
       c.el.style.setProperty('--peek-x', c.el.offsetWidth - 16 + 'px');
       applyOut(c);
-      applyOpacity(c);
       if (c.baseY == null) fresh.push(c);
     }
     for (const [cwd, c] of [...cards]) {
