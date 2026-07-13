@@ -13,6 +13,7 @@
     cursor: default;
   }
   #card {
+    position: relative;
     height: 100%;
     box-sizing: border-box;
     border-radius: 10px;
@@ -86,10 +87,39 @@
   #err:empty {
     display: none;
   }
+  /* 세션 종료 버튼: hover 시에만 보이고, 오클릭 방지로 두 번 클릭해야 실행된다 */
+  #kill {
+    display: none;
+    position: absolute;
+    top: 4px;
+    right: 5px;
+    width: 15px;
+    height: 15px;
+    line-height: 15px;
+    text-align: center;
+    border-radius: 4px;
+    font-size: 10px;
+    color: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.08);
+    cursor: pointer;
+  }
+  #card:hover #kill {
+    display: block;
+  }
+  #kill:hover {
+    background: rgba(0, 0, 0, 0.16);
+    color: #000;
+  }
+  body.arm-kill #kill {
+    display: block;
+    background: #c0392b;
+    color: #fff;
+  }
 </style>
 </head>
 <body>
   <div id="card">
+    <div id="kill" title="세션 종료 (터미널 닫기)">✕</div>
     <div id="name"></div>
     <div id="msg"></div>
     <div id="desc"></div>
@@ -100,6 +130,7 @@
   const msgEl = document.getElementById('msg');
   const descEl = document.getElementById('desc');
   const errEl = document.getElementById('err');
+  const killEl = document.getElementById('kill');
 
   window.api.onState((s) => {
     nameEl.textContent = s.name || '';
@@ -113,12 +144,31 @@
     errEl.textContent = s.err || '';
   });
 
+  // 첫 클릭은 무장(빨간색 3초), 그 안에 한 번 더 누르면 실제로 종료한다
+  let killArmTimer = null;
+  killEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (document.body.classList.contains('arm-kill')) {
+      clearTimeout(killArmTimer);
+      document.body.classList.remove('arm-kill');
+      window.api.killSession();
+      return;
+    }
+    document.body.classList.add('arm-kill');
+    killEl.title = '한 번 더 누르면 세션 종료';
+    killArmTimer = setTimeout(() => {
+      document.body.classList.remove('arm-kill');
+      killEl.title = '세션 종료 (터미널 닫기)';
+    }, 3000);
+  });
+
   // 클릭이면 VSC 창 열기, 4px 이상 움직이면 드래그 이동
   let downAt = null;
   let dragging = false;
 
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
+    if (e.target.closest('#kill')) return;
     downAt = { x: e.screenX, y: e.screenY };
     dragging = false;
   });

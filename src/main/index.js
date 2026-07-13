@@ -12,7 +12,7 @@ const Sound = require('./sound');
 const startServer = require('./server');
 const Sessions = require('./sessions');
 const Border = require('./border');
-const Scanner = require('./scanner');
+const { Scanner, findSessionProcs } = require('./scanner');
 const permission = require('./permission');
 
 if (!app.requestSingleInstanceLock()) {
@@ -50,7 +50,43 @@ app.on('window-all-closed', () => {
   // 위젯이 모두 닫혀도 메뉴바에 상주한다
 });
 
+// claude 프로세스에 SIGTERM을 보내고, 잠시 후 부모 셸도 종료해
+// VSC 터미널 탭까지 닫는다. 위젯은 즉시 제거한다 (스캔, hook 정리와 별개).
+function killSession(sessions, s) {
+  findSessionProcs(s.cwd, (procs) => {
+    if (!sessions.map.has(s.cwd)) return;
+    if (procs.length === 0) {
+      sessions.setError(s, '실행 중인 프로세스가 없음');
+      return;
+    }
+    console.log('[kill] ' + s.cwd + ' pids ' + procs.map((p) => p.pid + '/' + p.ppid).join(' '));
+    for (const p of procs) {
+      try {
+        process.kill(p.pid, 'SIGTERM');
+      } catch (err) {
+        console.error('[kill] pid ' + p.pid + ': ' + err.message);
+      }
+    }
+    setTimeout(() => {
+      for (const p of procs) {
+        if (p.ppid <= 1) continue;
+        try {
+          process.kill(p.ppid, 'SIGTERM');
+        } catch (err) {
+          console.error('[kill] ppid ' + p.ppid + ': ' + err.message);
+        }
+      }
+      if (sessions.map.has(s.cwd)) sessions.remove(s.cwd);
+    }, 800);
+  });
+}
+
 function setupIpc(sessions) {
+  ipcMain.on('kill-session', (e) => {
+    const s = sessions.findByWebContents(e.sender.id);
+    if (s) killSession(sessions, s);
+  });
+
   ipcMain.on('focus', (e) => {
     const s = sessions.findByWebContents(e.sender.id);
     if (!s) return;
@@ -83,6 +119,7 @@ function setupIpc(sessions) {
       { label: s.cwd, enabled: false },
       { type: 'separator' },
       { label: '위젯 닫기', click: () => sessions.remove(s.cwd) },
+      { label: '세션 종료 (터미널 닫기)', click: () => killSession(sessions, s) },
     ]).popup({ window: s.win });
   });
 }

@@ -44,4 +44,36 @@ class Scanner {
   }
 }
 
-module.exports = Scanner;
+// 워킹 디렉토리가 일치하는 claude 프로세스(pid)와 그 부모 셸(ppid)을 찾는다.
+// 위젯의 세션 종료 기능이 사용한다.
+function findSessionProcs(cwd, cb) {
+  execFile('/bin/ps', ['-axo', 'pid=,ppid=,command='], (err, out) => {
+    if (err) return cb([]);
+    const procs = [];
+    for (const line of out.split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (!m) continue;
+      if (/(^|\/)claude( |$)/.test(m[3])) procs.push({ pid: Number(m[1]), ppid: Number(m[2]) });
+    }
+    if (procs.length === 0) return cb([]);
+    execFile(
+      '/usr/sbin/lsof',
+      ['-a', '-d', 'cwd', '-p', procs.map((p) => p.pid).join(','), '-Fn'],
+      (err2, out2) => {
+        if (err2 && !out2) return cb([]);
+        const matches = [];
+        let cur = 0;
+        for (const line of String(out2).split('\n')) {
+          if (line.startsWith('p')) cur = Number(line.slice(1));
+          else if (line.startsWith('n/') && line.slice(1) === cwd) {
+            const p = procs.find((x) => x.pid === cur);
+            if (p) matches.push(p);
+          }
+        }
+        cb(matches);
+      }
+    );
+  });
+}
+
+module.exports = { Scanner, findSessionProcs };
