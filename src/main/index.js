@@ -1,5 +1,6 @@
 const {
   app,
+  globalShortcut,
   ipcMain,
   Menu,
   Tray,
@@ -39,6 +40,7 @@ app.whenReady().then(() => {
   });
   sessions.on('pending-changed', () => {
     border.setPending(sessions.pendingCount());
+    syncShortcuts(sessions);
   });
 
   startServer(cfg.get('port'), (evt) => sessions.handleEvent(evt));
@@ -53,6 +55,35 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   // 위젯이 모두 닫혀도 메뉴바에 상주한다
 });
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+});
+
+// 알림이 있는 동안만 전역 단축키를 등록한다. 평소에는 시스템 단축키를
+// 점유하지 않고, 수식키 조합이라 일반 타이핑과 충돌하지 않는다.
+// 대상은 항상 가장 오래 기다린 알림 하나다 (Enter로 이동, Esc로 닫기).
+let shortcutsOn = false;
+
+function syncShortcuts(sessions) {
+  const has = sessions.pendingCount() > 0;
+  if (has && !shortcutsOn) {
+    const ok1 = globalShortcut.register('Alt+Return', () => {
+      const t = sessions.alertTarget();
+      if (t) focusSession(sessions, t);
+    });
+    const ok2 = globalShortcut.register('Alt+Escape', () => {
+      const t = sessions.alertTarget();
+      if (t) sessions.resolveAlert(t);
+    });
+    shortcutsOn = true;
+    if (!ok1 || !ok2) console.error('[shortcut] register failed ' + ok1 + '/' + ok2);
+  } else if (!has && shortcutsOn) {
+    globalShortcut.unregister('Alt+Return');
+    globalShortcut.unregister('Alt+Escape');
+    shortcutsOn = false;
+  }
+}
 
 // 창 제목 매칭 후보: 세션 폴더 이름과 그 상위 폴더 이름들 (홈 디렉토리 위는 제외).
 // 워크스페이스 하위 폴더에서 실행한 세션도 워크스페이스 이름으로 창을 찾게 한다.
@@ -95,37 +126,45 @@ function killSession(sessions, s) {
   });
 }
 
+function focusSession(sessions, s) {
+  const o = s.origin || {};
+  const isVscode =
+    (!o.termProgram && !o.bundleId) ||
+    o.termProgram === 'vscode' ||
+    /vscode/i.test(o.bundleId || '');
+  if (!isVscode && o.bundleId) {
+    // VSC가 아닌 출처(Claude 앱, iTerm 등)는 해당 앱을 앞으로 가져온다
+    permission.activateApp(o.bundleId, (result) => {
+      console.log('[focus] ' + s.cwd + ' app ' + o.bundleId + ' -> ' + result);
+    });
+    return;
+  }
+  if (!systemPreferences.isTrustedAccessibilityClient(true)) {
+    sessions.setError(s, '손쉬운 사용 권한 필요');
+    return;
+  }
+  permission.focus(titleCandidates(s.cwd), (result) => {
+    console.log('[focus] ' + s.cwd + ' -> ' + result);
+    if (result !== 'OK' && sessions.map.has(s.cwd)) {
+      if (o.termProgram === 'vscode') {
+        // 제목 매칭 실패 시 VSC 앱이라도 앞으로 가져온다
+        permission.activateApp(o.bundleId || 'com.microsoft.VSCode');
+      } else {
+        sessions.setError(s, '창을 찾을 수 없음');
+      }
+    }
+  });
+}
+
 function setupIpc(sessions, dock) {
   ipcMain.on('focus', (e, cwd) => {
     const s = sessions.map.get(cwd);
-    if (!s) return;
-    const o = s.origin || {};
-    const isVscode =
-      (!o.termProgram && !o.bundleId) ||
-      o.termProgram === 'vscode' ||
-      /vscode/i.test(o.bundleId || '');
-    if (!isVscode && o.bundleId) {
-      // VSC가 아닌 출처(Claude 앱, iTerm 등)는 해당 앱을 앞으로 가져온다
-      permission.activateApp(o.bundleId, (result) => {
-        console.log('[focus] ' + s.cwd + ' app ' + o.bundleId + ' -> ' + result);
-      });
-      return;
-    }
-    if (!systemPreferences.isTrustedAccessibilityClient(true)) {
-      sessions.setError(s, '손쉬운 사용 권한 필요');
-      return;
-    }
-    permission.focus(titleCandidates(s.cwd), (result) => {
-      console.log('[focus] ' + s.cwd + ' -> ' + result);
-      if (result !== 'OK' && sessions.map.has(s.cwd)) {
-        if (o.termProgram === 'vscode') {
-          // 제목 매칭 실패 시 VSC 앱이라도 앞으로 가져온다
-          permission.activateApp(o.bundleId || 'com.microsoft.VSCode');
-        } else {
-          sessions.setError(s, '창을 찾을 수 없음');
-        }
-      }
-    });
+    if (s) focusSession(sessions, s);
+  });
+
+  ipcMain.on('dismiss-alert', (e, cwd) => {
+    const s = sessions.map.get(cwd);
+    if (s) sessions.resolveAlert(s);
   });
 
   ipcMain.on('set-card-y', (e, map) => {

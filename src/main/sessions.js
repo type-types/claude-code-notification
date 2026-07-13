@@ -292,13 +292,26 @@ class Sessions extends EventEmitter {
     return [...this.map.values()].filter((s) => s.alert).length;
   }
 
+  // 가장 최근에 온 알림 세션. 도크 최상단에 놓이고 글로우로 강조되며,
+  // 전역 단축키(Enter 이동, Esc 닫기)의 대상이다.
+  alertTarget() {
+    let target = null;
+    for (const s of this.map.values()) {
+      if (s.alert && (!target || s.alert.ts > target.alert.ts)) target = s;
+    }
+    return target;
+  }
+
   // 도크로 보낼 전체 카드 목록. 저장된 세로 위치(y)와 투명도를 함께 싣는다.
   // 위치가 없는 새 카드는 y: null로 보내고 renderer가 빈자리에 배치한다.
   refresh() {
     const names = computeDisplayNames([...this.map.keys()]);
     const ys = this.cfg.get('cardY') || {};
     const now = Date.now();
+    const target = this.alertTarget();
     const cards = [...this.map.values()].map((s) => ({
+      target: s === target,
+      alertTs: s.alert ? s.alert.ts : 0,
       cwd: s.cwd,
       name: names.get(s.cwd),
       origin: this.originLabel(s),

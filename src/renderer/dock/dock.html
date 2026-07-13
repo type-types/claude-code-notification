@@ -99,7 +99,7 @@
     gap: 5px;
     min-height: 28px;
     transform: translateX(var(--peek-x, 224px));
-    transition: top 0.25s ease, transform 0.22s ease, background 0.25s, border-color 0.25s, opacity 0.3s;
+    transition: top 0.25s ease, transform 0.22s ease, background 0.25s, border-color 0.25s;
   }
   /* 알림 카드는 메시지가 보이도록 최대 폭으로 고정 */
   .card.alert,
@@ -108,9 +108,6 @@
   }
   .card.out {
     transform: translateX(0);
-  }
-  .card.stale {
-    opacity: 0.45;
   }
   /* 드래그 중인 카드는 애니메이션 없이 커서를 그대로 따라간다 */
   .card.dragging {
@@ -178,6 +175,49 @@
   .card.input .msg {
     color: #123c6e;
   }
+  /* 가장 최근 알림 카드: 은은한 글로우로 강조. 전역 단축키의 대상이다 */
+  .card.target {
+    box-shadow: 0 0 14px rgba(214, 138, 16, 0.6);
+  }
+  .card.target.input {
+    box-shadow: 0 0 14px rgba(40, 100, 190, 0.55);
+  }
+  .hot {
+    display: none;
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 8.5px;
+    letter-spacing: 0.5px;
+    color: rgba(0, 0, 0, 0.45);
+  }
+  .card.target .hot {
+    display: block;
+  }
+  /* 알림 닫기 버튼: 알림이 떠 있을 때만 카드 우상단에 보인다 */
+  .dismiss {
+    display: none;
+    position: absolute;
+    top: 4px;
+    right: 5px;
+    width: 15px;
+    height: 15px;
+    line-height: 15px;
+    text-align: center;
+    border-radius: 4px;
+    font-size: 10px;
+    color: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.08);
+    cursor: pointer;
+  }
+  .card.alert .dismiss,
+  .card.input .dismiss {
+    display: block;
+  }
+  .dismiss:hover {
+    background: rgba(0, 0, 0, 0.18);
+    color: #000;
+  }
 </style>
 </head>
 <body>
@@ -223,10 +263,20 @@
     c.el.classList.toggle('out', !!out);
   }
 
-  // 투명도는 전역 하나로, body에 한 번만 적용해서 카드와 컨트롤 패널이
-  // 항상 똑같이 변하게 한다. 유휴(stale) 카드의 추가 감쇠는 CSS가 곱한다.
+  // 투명도는 전역 하나를 일반 카드와 컨트롤 패널에 똑같이 적용한다.
+  // 단, 알림이 떠서 판단이 필요한 카드는 전역 값과 무관하게 불투명하게
+  // 강조한다. 유휴(stale) 카드는 상태 표시로 전역 값에 0.45를 곱한다.
+  function applyOpacity(c) {
+    if (c.state && c.state.alert) {
+      c.el.style.opacity = '';
+      return;
+    }
+    c.el.style.opacity = String(opacity * (c.state && c.state.stale ? 0.45 : 1));
+  }
+
   function applyGlobalOpacity() {
-    document.body.style.opacity = String(opacity);
+    ctrl.style.opacity = String(opacity);
+    for (const c of cards.values()) applyOpacity(c);
   }
 
   toggle.addEventListener('click', () => {
@@ -244,15 +294,27 @@
     applyGlobalOpacity();
   });
 
-  // 화면 표시용 배치: 저장 위치(baseY)를 그대로 쓰되, 알림으로 카드가
-  // 길어져 겹치면 아래 카드를 화면에서만 아래로 민다. 저장 위치는 그대로라
-  // 알림이 풀리면 제자리로 돌아온다. 드래그 중인 카드는 건드리지 않는다.
+  // 화면 표시용 배치. 알림 카드들은 온 순서 역순(최신이 위)으로 도크
+  // 맨 위에 모아 쌓고, 나머지는 저장 위치(baseY)를 그대로 쓰되 알림
+  // 스택이나 위 카드와 겹치면 화면에서만 아래로 민다. 저장 위치는
+  // 건드리지 않아 알림이 풀리면 모두 제자리로 돌아온다. 드래그 중인
+  // 카드는 건드리지 않는다.
   function layout() {
-    const items = [...cards.values()]
-      .filter((c) => c.baseY != null && !(drag && drag.card === c))
+    const items = [...cards.values()].filter(
+      (c) => c.baseY != null && !(drag && drag.card === c)
+    );
+    const alerts = items
+      .filter((c) => c.state && c.state.alert)
+      .sort((a, b) => b.state.alertTs - a.state.alertTs);
+    const normal = items
+      .filter((c) => !(c.state && c.state.alert))
       .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.cwd < b.el.dataset.cwd ? -1 : 1));
     let cursor = topMin();
-    for (const c of items) {
+    for (const c of alerts) {
+      c.el.style.top = cursor + 'px';
+      cursor += c.el.offsetHeight + GAP;
+    }
+    for (const c of normal) {
       const y = Math.max(c.baseY, cursor);
       c.el.style.top = y + 'px';
       cursor = y + c.el.offsetHeight + GAP;
@@ -315,6 +377,8 @@
     el.className = 'card';
     el.dataset.cwd = cwd;
     el.innerHTML =
+      '<div class="hot" title="Option+Enter로 이동, Option+Esc로 닫기">⌥⏎</div>' +
+      '<div class="dismiss" title="알림 닫기">✕</div>' +
       '<div class="name"></div><div class="msg"></div>' +
       '<div class="desc"></div><div class="err"></div>';
     const c = {
@@ -330,13 +394,18 @@
     el.addEventListener('mouseenter', () => applyOut(c));
     el.addEventListener('mouseleave', () => applyOut(c));
 
+    el.querySelector('.dismiss').addEventListener('click', (e) => {
+      e.stopPropagation();
+      window.api.dismissAlert(cwd);
+    });
+
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       window.api.menu(cwd);
     });
 
     el.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || e.target.closest('.dismiss')) return;
       down = { c, y: e.screenY };
     });
 
@@ -416,10 +485,11 @@
       c.err.textContent = s.err || '';
       c.el.classList.toggle('alert', !!s.alert);
       c.el.classList.toggle('input', s.kind === 'input');
-      c.el.classList.toggle('stale', !!s.stale);
+      c.el.classList.toggle('target', !!s.target && !!s.alert);
       // 내용에 따라 달라진 폭을 재서, 접혔을 때 밀어넣는 거리를 갱신한다
       c.el.style.setProperty('--peek-x', c.el.offsetWidth - 16 + 'px');
       applyOut(c);
+      applyOpacity(c);
       if (c.baseY == null) fresh.push(c);
     }
     for (const [cwd, c] of [...cards]) {
