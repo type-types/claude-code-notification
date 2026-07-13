@@ -7,7 +7,8 @@ const DEFAULTS = {
   muted: false,
   idleGlow: true,
   soundPath: '/System/Library/Sounds/Glass.aiff',
-  positions: {},
+  cardY: {},
+  opacity: 1,
 };
 
 class Config {
@@ -19,6 +20,9 @@ class Config {
     } catch (e) {
       // 첫 실행이거나 파일이 깨진 경우 기본값 사용
     }
+    // 지금은 안 쓰는 옛 키 정리 (창별 자유 배치, 순서 저장 시절)
+    delete this.data.positions;
+    delete this.data.order;
   }
 
   get(key) {

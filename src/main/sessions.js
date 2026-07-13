@@ -1,15 +1,6 @@
-const { BrowserWindow, screen } = require('electron');
 const path = require('path');
 const EventEmitter = require('events');
 
-const W_MIN = 160;
-const W_MAX = 240;
-const H_NORMAL = 36;
-const H_ALERT = 70;
-const H_ALERT_DESC = 84;
-const STACK_STEP = 44;
-const H_INPUT = 52;
-const H_ERR = 15;
 const STALE_MS = 4 * 60 * 60 * 1000;
 const ERR_CLEAR_MS = 3000;
 
@@ -60,18 +51,20 @@ function formatTool(name, input) {
 }
 
 class Sessions extends EventEmitter {
-  constructor(cfg) {
+  constructor(cfg, dock) {
     super();
     this.cfg = cfg;
+    this.dock = dock;
     this.map = new Map();
-    this.staleTimer = setInterval(() => this.checkStale(), 60 * 1000);
+    this.byId = new Map();
+    this.staleTimer = setInterval(() => this.refresh(), 60 * 1000);
   }
 
   handleEvent(evt) {
     const type = evt && evt.type;
-    const cwd = evt && evt.cwd;
-    if (!type || !cwd) return;
-    console.log('[event] ' + type + ' ' + cwd);
+    if (!type || !evt.cwd) return;
+    const cwd = this.homeCwd(evt.cwd, evt.session_id, type === 'session_start');
+    console.log('[event] ' + type + ' ' + evt.cwd + (cwd !== evt.cwd ? ' => ' + cwd : ''));
     if (type === 'session_start') {
       this.ensure(cwd, evt.session_id);
     } else if (type === 'permission_request') {
@@ -138,115 +131,42 @@ class Sessions extends EventEmitter {
     this.resolveAlert(s);
   }
 
+  // 이벤트의 cwd를 위젯 키로 바꾼다. 세션 안에서 Bash가 cd로 이동하면
+  // 이후 hook 이벤트의 cwd가 하위 폴더로 바뀌어, 같은 세션인데 폴더마다
+  // 위젯이 증식한다. 세션 ID로 기존 세션을 먼저 찾고, 처음 보는 ID면
+  // 가장 가까운 상위 경로의 세션에 귀속시켜 세션당 위젯 하나를 유지한다.
+  homeCwd(cwd, sessionId, isStart) {
+    const known = sessionId ? this.byId.get(sessionId) : null;
+    if (known && this.map.get(known.cwd) === known) return known.cwd;
+    if (this.map.has(cwd) || isStart) return cwd;
+    let p = cwd;
+    for (;;) {
+      const parent = path.dirname(p);
+      if (parent === p) break;
+      p = parent;
+      if (this.map.has(p)) return p;
+    }
+    return cwd;
+  }
+
   ensure(cwd, sessionId) {
     let s = this.map.get(cwd);
     if (!s) {
       s = {
         cwd,
-        sessionId: sessionId || '',
-        name: path.basename(cwd),
         alert: null,
         stopped: false,
         origin: null,
         err: '',
         lastEvent: Date.now(),
-        win: null,
-        dragTimer: null,
         errTimer: null,
       };
       this.map.set(cwd, s);
-      this.createWindow(s);
-      this.refreshNames();
     }
-    if (sessionId) s.sessionId = sessionId;
+    if (sessionId) this.byId.set(sessionId, s);
     s.lastEvent = Date.now();
-    if (s.win && !s.win.isDestroyed()) s.win.setOpacity(1);
+    this.refresh();
     return s;
-  }
-
-  createWindow(s) {
-    const saved = this.cfg.get('positions')[s.cwd];
-    const pos = saved && this.isOnScreen(saved) ? saved : this.defaultPos();
-    const win = new BrowserWindow({
-      x: pos.x,
-      y: pos.y,
-      width: this.widthFor(s),
-      height: H_NORMAL,
-      frame: false,
-      transparent: true,
-      resizable: false,
-      movable: true,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      focusable: false,
-      hasShadow: false,
-      fullscreenable: false,
-      webPreferences: {
-        preload: path.join(__dirname, '..', 'preload', 'widget.js'),
-      },
-    });
-    win.setAlwaysOnTop(true, 'screen-saver');
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    win.loadFile(path.join(__dirname, '..', 'renderer', 'widget', 'widget.html'));
-    win.webContents.on('did-finish-load', () => this.sendState(s));
-    s.win = win;
-  }
-
-  isOnScreen(p) {
-    return screen.getAllDisplays().some((d) => {
-      const b = d.bounds;
-      return p.x >= b.x && p.x < b.x + b.width - 40 && p.y >= b.y && p.y < b.y + b.height - 20;
-    });
-  }
-
-  defaultPos() {
-    const wa = screen.getPrimaryDisplay().workArea;
-    const x = wa.x + wa.width - W_MAX - 16;
-    let y = wa.y + 16;
-    const taken = [...this.map.values()]
-      .filter((o) => o.win && !o.win.isDestroyed())
-      .map((o) => o.win.getBounds());
-    while (taken.some((b) => Math.abs(b.y - y) < STACK_STEP - 4 && Math.abs(b.x - x) < W_MAX)) {
-      y += STACK_STEP;
-    }
-    return { x, y };
-  }
-
-  widthFor(s) {
-    return Math.min(W_MAX, Math.max(W_MIN, 28 + s.name.length * 8));
-  }
-
-  applySize(s) {
-    if (!s.win || s.win.isDestroyed()) return;
-    const b = s.win.getBounds();
-    const base = !s.alert
-      ? H_NORMAL
-      : s.alert.kind === 'input'
-        ? H_INPUT
-        : s.alert.desc
-          ? H_ALERT_DESC
-          : H_ALERT;
-    s.win.setBounds(
-      {
-        x: b.x,
-        y: b.y,
-        width: s.alert ? W_MAX : this.widthFor(s),
-        height: base + (s.err ? H_ERR : 0),
-      },
-      true
-    );
-  }
-
-  refreshNames() {
-    const names = computeDisplayNames([...this.map.keys()]);
-    for (const s of this.map.values()) {
-      const next = names.get(s.cwd);
-      if (next !== s.name) {
-        s.name = next;
-        this.applySize(s);
-      }
-      this.sendState(s);
-    }
   }
 
   // 알림 직전의 PreToolUse 내용으로 어떤 작업에 대한 허용인지 요약한다.
@@ -273,8 +193,7 @@ class Sessions extends EventEmitter {
       ts: Date.now(),
     };
     s.err = '';
-    this.applySize(s);
-    this.sendState(s);
+    this.refresh();
     this.emit('alert');
     this.emit('pending-changed');
   }
@@ -283,8 +202,7 @@ class Sessions extends EventEmitter {
     if (!s.alert) return;
     s.alert = null;
     s.err = '';
-    this.applySize(s);
-    this.sendState(s);
+    this.refresh();
     this.emit('pending-changed');
   }
 
@@ -292,10 +210,10 @@ class Sessions extends EventEmitter {
     const s = this.map.get(cwd);
     if (!s || s.origin || !origin) return;
     s.origin = origin;
-    this.sendState(s);
+    this.refresh();
   }
 
-  // 위젯 툴팁에 표시할 세션 출처 이름
+  // 카드 툴팁에 표시할 세션 출처 이름
   originLabel(s) {
     const o = s.origin;
     if (!o) return '';
@@ -308,48 +226,44 @@ class Sessions extends EventEmitter {
 
   setError(s, msg) {
     s.err = msg;
-    this.applySize(s);
-    this.sendState(s);
+    this.refresh();
     if (s.errTimer) clearTimeout(s.errTimer);
     s.errTimer = setTimeout(() => {
       s.err = '';
-      this.applySize(s);
-      this.sendState(s);
+      this.refresh();
     }, ERR_CLEAR_MS);
   }
 
   remove(cwd) {
     const s = this.map.get(cwd);
     if (!s) return;
-    if (s.dragTimer) clearInterval(s.dragTimer);
     if (s.errTimer) clearTimeout(s.errTimer);
-    if (s.win && !s.win.isDestroyed()) s.win.destroy();
     this.map.delete(cwd);
-    this.refreshNames();
+    for (const [id, sess] of [...this.byId]) {
+      if (sess === s) this.byId.delete(id);
+    }
+    this.refresh();
     this.emit('pending-changed');
   }
 
-  startDrag(s) {
-    if (s.dragTimer || !s.win || s.win.isDestroyed()) return;
-    const cur = screen.getCursorScreenPoint();
-    const b = s.win.getBounds();
-    const off = { x: cur.x - b.x, y: cur.y - b.y };
-    s.dragTimer = setInterval(() => {
-      if (!s.win || s.win.isDestroyed()) return;
-      const p = screen.getCursorScreenPoint();
-      s.win.setPosition(p.x - off.x, p.y - off.y);
-    }, 16);
+  // 드래그 드랍으로 정해진 카드 세로 위치를 저장한다. 계산은 renderer가
+  // 담당하고 여기서는 저장만 한다. refresh를 부르지 않는 것이 의도인데,
+  // 저장이 다시 화면 갱신을 부르면 renderer의 최신 상태를 덮는 에코 루프가
+  // 생길 수 있기 때문이다. 다음 자연 갱신부터 저장값이 실려 나간다.
+  setCardY(map) {
+    const cur = Object.assign({}, this.cfg.get('cardY'));
+    for (const k of Object.keys(map)) {
+      const v = Number(map[k]);
+      if (isFinite(v)) cur[k] = Math.round(v);
+    }
+    this.cfg.set('cardY', cur);
   }
 
-  endDrag(s) {
-    if (!s.dragTimer) return;
-    clearInterval(s.dragTimer);
-    s.dragTimer = null;
-    if (!s.win || s.win.isDestroyed()) return;
-    const b = s.win.getBounds();
-    const positions = this.cfg.get('positions');
-    positions[s.cwd] = { x: b.x, y: b.y };
-    this.cfg.set('positions', positions);
+  // 카드 투명도(0.2 ~ 1). 적용은 renderer가 즉시 하므로 저장만 한다.
+  setOpacity(v) {
+    v = Number(v);
+    if (!isFinite(v)) return;
+    this.cfg.set('opacity', Math.min(1, Math.max(0.2, v)));
   }
 
   // 스캐너가 확인한 실행 중 세션 목록과 동기화한다.
@@ -374,37 +288,29 @@ class Sessions extends EventEmitter {
     }
   }
 
-  checkStale() {
-    const now = Date.now();
-    for (const s of this.map.values()) {
-      if (!s.win || s.win.isDestroyed()) continue;
-      s.win.setOpacity(!s.alert && now - s.lastEvent > STALE_MS ? 0.45 : 1);
-    }
-  }
-
   pendingCount() {
     return [...this.map.values()].filter((s) => s.alert).length;
   }
 
-  findByWebContents(wcId) {
-    for (const s of this.map.values()) {
-      if (s.win && !s.win.isDestroyed() && s.win.webContents.id === wcId) return s;
-    }
-    return null;
-  }
-
-  sendState(s) {
-    if (!s.win || s.win.isDestroyed()) return;
-    s.win.webContents.send('state', {
-      name: s.name,
+  // 도크로 보낼 전체 카드 목록. 저장된 세로 위치(y)와 투명도를 함께 싣는다.
+  // 위치가 없는 새 카드는 y: null로 보내고 renderer가 빈자리에 배치한다.
+  refresh() {
+    const names = computeDisplayNames([...this.map.keys()]);
+    const ys = this.cfg.get('cardY') || {};
+    const now = Date.now();
+    const cards = [...this.map.values()].map((s) => ({
       cwd: s.cwd,
+      name: names.get(s.cwd),
       origin: this.originLabel(s),
       alert: !!s.alert,
       kind: s.alert ? s.alert.kind : '',
       message: s.alert ? s.alert.message : '',
       desc: s.alert ? s.alert.desc : '',
       err: s.err,
-    });
+      stale: !s.alert && now - s.lastEvent > STALE_MS,
+      y: typeof ys[s.cwd] === 'number' ? ys[s.cwd] : null,
+    }));
+    this.dock.send({ cards, opacity: this.cfg.get('opacity') || 1 });
   }
 }
 

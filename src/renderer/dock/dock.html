@@ -1,0 +1,448 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif;
+    user-select: none;
+    cursor: default;
+  }
+  /* 컨트롤 패널: 맨 위에 상시 노출. 접혀 있으면 [<] 버튼만 보이고,
+     누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더가 나타난다 */
+  #ctrl {
+    position: absolute;
+    top: 14px;
+    right: 0;
+    width: 240px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: stretch;
+    border-radius: 10px 0 0 10px;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-right: none;
+    transform: translateX(214px);
+    transition: transform 0.22s ease;
+    z-index: 5;
+  }
+  #ctrl.out {
+    transform: translateX(0);
+  }
+  #toggle {
+    flex: 0 0 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: rgba(0, 0, 0, 0.55);
+    border-right: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 10px 0 0 10px;
+    cursor: pointer;
+  }
+  #toggle:hover {
+    background: rgba(0, 0, 0, 0.06);
+    color: #000;
+  }
+  #ctrl.out #toggle {
+    color: #0a60c2;
+  }
+  #ctrlBody {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+  }
+  #op {
+    flex: 1;
+    min-width: 0;
+    accent-color: #0a60c2;
+  }
+  /* 카드: 각자 저장된 세로 위치(top)에 자유 배치된다. 평소에는 오른쪽으로
+     밀려 들어가 왼쪽 가장자리 16px만 보이고, hover / 전체 펼침 / 알림 시
+     왼쪽으로 튀어나온다. 폭은 내용 길이에 맞추므로 밀어넣는 거리는 JS가
+     카드별로 측정해 --peek-x 변수로 넣는다. top 변화는 부드럽게 움직여서
+     겹침 해소로 밀려나는 모습이 자연스럽다 */
+  .card {
+    position: absolute;
+    right: 0;
+    width: max-content;
+    min-width: 72px;
+    max-width: 240px;
+    box-sizing: border-box;
+    border-radius: 10px 0 0 10px;
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-right: none;
+    color: #1c1c1e;
+    padding: 13px 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    min-height: 28px;
+    transform: translateX(var(--peek-x, 224px));
+    transition: top 0.25s ease, transform 0.22s ease, background 0.25s, border-color 0.25s, opacity 0.3s;
+  }
+  /* 알림 카드는 메시지가 보이도록 최대 폭으로 고정 */
+  .card.alert,
+  .card.input {
+    width: 240px;
+  }
+  .card.out {
+    transform: translateX(0);
+  }
+  /* 드래그 중인 카드는 애니메이션 없이 커서를 그대로 따라간다 */
+  .card.dragging {
+    transition: background 0.25s, border-color 0.25s;
+    opacity: 0.9 !important;
+    border-color: rgba(0, 0, 0, 0.5);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    z-index: 10;
+  }
+  .name {
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.3;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .msg {
+    display: none;
+    font-size: 10px;
+    line-height: 1.35;
+    color: #5a3c00;
+    overflow: hidden;
+    word-break: break-all;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+  .desc {
+    display: none;
+    font-size: 9.5px;
+    line-height: 1.3;
+    color: rgba(90, 60, 0, 0.65);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .err {
+    font-size: 10px;
+    color: #a33000;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .err:empty {
+    display: none;
+  }
+  .card.alert {
+    background: rgba(255, 216, 140, 0.94);
+    border-color: rgba(200, 130, 20, 0.8);
+  }
+  .card.alert .msg {
+    display: -webkit-box;
+  }
+  .card.alert .desc {
+    display: block;
+  }
+  .card.alert .desc:empty {
+    display: none;
+  }
+  .card.input {
+    background: rgba(190, 220, 255, 0.94);
+    border-color: rgba(40, 100, 190, 0.7);
+  }
+  .card.input .msg {
+    color: #123c6e;
+  }
+</style>
+</head>
+<body>
+  <div id="ctrl">
+    <div id="toggle" title="모두 펼치기">‹</div>
+    <div id="ctrlBody">
+      <input id="op" type="range" min="20" max="100" step="5" value="100" title="투명도">
+    </div>
+  </div>
+<script>
+  const ctrl = document.getElementById('ctrl');
+  const toggle = document.getElementById('toggle');
+  const opSlider = document.getElementById('op');
+  const cards = new Map();
+  const GAP = 6;
+
+  let down = null;
+  let drag = null;
+  let allOut = false;
+  let opacity = 1;
+  // 로컬에서 막 바꾼 값이 전송 중이던 옛 상태에 덮이지 않도록 잠시 지키는 시각
+  let opTouchedAt = 0;
+
+  function topMin() {
+    return ctrl.offsetTop + ctrl.offsetHeight + 10;
+  }
+
+  // 도크 창은 평소 마우스 이벤트를 통과시킨다. forward 옵션으로 mousemove는
+  // 계속 들어오므로, 커서가 카드나 컨트롤 패널 위에 있을 때만 이벤트를 받는다.
+  let captured = false;
+  function setCapture(on) {
+    if (on === captured) return;
+    captured = on;
+    window.api.mouseCapture(on);
+  }
+
+  function applyOut(c) {
+    const out =
+      allOut ||
+      (c.state && c.state.alert) ||
+      c.el.matches(':hover') ||
+      (drag && drag.card === c);
+    c.el.classList.toggle('out', !!out);
+  }
+
+  // 투명도는 알림 없는 카드에만 적용해서, 알림은 항상 선명하게 보이게 한다.
+  // 컨트롤 패널(슬라이더 포함)도 같은 투명도를 따른다.
+  function applyOpacity(c) {
+    if (c.state && c.state.alert) {
+      c.el.style.opacity = '';
+      return;
+    }
+    c.el.style.opacity = String(opacity * (c.state && c.state.stale ? 0.45 : 1));
+  }
+
+  function applyCtrlOpacity() {
+    ctrl.style.opacity = String(opacity);
+  }
+
+  toggle.addEventListener('click', () => {
+    allOut = !allOut;
+    ctrl.classList.toggle('out', allOut);
+    toggle.textContent = allOut ? '›' : '‹';
+    toggle.title = allOut ? '모두 접기' : '모두 펼치기';
+    for (const c of cards.values()) applyOut(c);
+  });
+
+  opSlider.addEventListener('input', () => {
+    opacity = Number(opSlider.value) / 100;
+    opTouchedAt = Date.now();
+    window.api.setOpacity(opacity);
+    applyCtrlOpacity();
+    for (const c of cards.values()) applyOpacity(c);
+  });
+
+  // 화면 표시용 배치: 저장 위치(baseY)를 그대로 쓰되, 알림으로 카드가
+  // 길어져 겹치면 아래 카드를 화면에서만 아래로 민다. 저장 위치는 그대로라
+  // 알림이 풀리면 제자리로 돌아온다. 드래그 중인 카드는 건드리지 않는다.
+  function layout() {
+    const items = [...cards.values()]
+      .filter((c) => c.baseY != null && !(drag && drag.card === c))
+      .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.cwd < b.el.dataset.cwd ? -1 : 1));
+    let cursor = topMin();
+    for (const c of items) {
+      const y = Math.max(c.baseY, cursor);
+      c.el.style.top = y + 'px';
+      cursor = y + c.el.offsetHeight + GAP;
+    }
+  }
+
+  // 드랍 시 겹침 해소. 놓는 카드(c)를 y에 두는 것을 기준으로:
+  // 1) 중심이 위인 카드들은 겹치는 만큼 위로 연쇄해서 밀어낸다
+  //    (이 단계에서는 컨트롤 패널 영역 침범을 허용한다)
+  // 2) [위쪽 카드들, 놓는 카드, 아래쪽 카드들] 순서로 위에서부터 훑으며
+  //    컨트롤 패널 아래(topMin)부터 차례로 자리를 보장한다. 위쪽 연쇄가
+  //    패널을 침범했다면 여기서 다시 아래로 밀리면서, 놓는 카드조차
+  //    아래로 밀려나는 요구 동작이 자연스럽게 나온다.
+  // 바뀐 위치는 전부 저장한다.
+  function resolveDrop(c, y) {
+    const MIN = topMin();
+    const h = c.el.offsetHeight;
+    y = Math.max(MIN, y);
+    const myCenter = y + h / 2;
+    const others = [...cards.values()].filter((o) => o !== c && o.baseY != null);
+    const above = others.filter((o) => o.baseY + o.el.offsetHeight / 2 <= myCenter);
+    const below = others.filter((o) => o.baseY + o.el.offsetHeight / 2 > myCenter);
+
+    const oldY = new Map(others.map((o) => [o, o.baseY]));
+    c.baseY = y;
+
+    // 1) 위쪽 연쇄: 놓는 카드에 가까운 것부터, 겹치면 위로 올린다
+    above.sort((a, b) => b.baseY - a.baseY);
+    let limit = y - GAP;
+    for (const o of above) {
+      const oh = o.el.offsetHeight;
+      if (o.baseY + oh > limit) o.baseY = limit - oh;
+      limit = o.baseY - GAP;
+    }
+
+    // 2) 위에서부터 아래로 자리 보장 (놓는 카드의 의도된 순서 유지)
+    above.sort((a, b) => a.baseY - b.baseY);
+    below.sort((a, b) => a.baseY - b.baseY);
+    const seq = above.concat([c], below);
+    let cursor = MIN;
+    for (const o of seq) {
+      if (o.baseY < cursor) o.baseY = cursor;
+      cursor = o.baseY + o.el.offsetHeight + GAP;
+    }
+
+    const changed = { [c.el.dataset.cwd]: c.baseY };
+    c.movedAt = Date.now();
+    for (const o of others) {
+      if (o.baseY !== oldY.get(o)) {
+        o.movedAt = Date.now();
+        changed[o.el.dataset.cwd] = o.baseY;
+      }
+    }
+    window.api.setY(changed);
+    layout();
+  }
+
+  function makeCard(cwd) {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.dataset.cwd = cwd;
+    el.innerHTML =
+      '<div class="name"></div><div class="msg"></div>' +
+      '<div class="desc"></div><div class="err"></div>';
+    const c = {
+      el,
+      name: el.querySelector('.name'),
+      msg: el.querySelector('.msg'),
+      desc: el.querySelector('.desc'),
+      err: el.querySelector('.err'),
+      state: null,
+      baseY: null,
+      movedAt: 0,
+    };
+    el.addEventListener('mouseenter', () => applyOut(c));
+    el.addEventListener('mouseleave', () => applyOut(c));
+
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      window.api.menu(cwd);
+    });
+
+    el.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      down = { c, y: e.screenY };
+    });
+
+    return c;
+  }
+
+  // 드래그 시작: 카드가 커서를 그대로 따라간다. 다른 카드는 놓기 전까지
+  // 움직이지 않고, 놓는 순간 resolveDrop이 밀어낸다.
+  function startDrag(c, e) {
+    const r = c.el.getBoundingClientRect();
+    drag = { card: c, offsetY: e.clientY - r.top };
+    c.el.classList.add('dragging');
+    c.el.style.top = r.top + 'px';
+    applyOut(c);
+  }
+
+  function endDrag() {
+    const c = drag.card;
+    const y = parseFloat(c.el.style.top) || topMin();
+    c.el.classList.remove('dragging');
+    drag = null;
+    applyOut(c);
+    resolveDrop(c, y);
+  }
+
+  document.addEventListener('mousemove', (e) => {
+    if (drag) {
+      drag.card.el.style.top = e.clientY - drag.offsetY + 'px';
+      return;
+    }
+    if (down && Math.abs(e.screenY - down.y) > 6) {
+      startDrag(down.c, e);
+      return;
+    }
+    setCapture(!!(e.target.closest('.card') || e.target.closest('#ctrl')));
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (drag) endDrag();
+    else if (down) window.api.focus(down.c.el.dataset.cwd);
+    down = null;
+  });
+
+  document.documentElement.addEventListener('mouseleave', () => {
+    if (drag) endDrag();
+    setCapture(false);
+  });
+
+  window.api.onState((state) => {
+    const list = state.cards || [];
+    // 슬라이더를 막 움직인 직후에는 전송 중이던 옛 값이 덮지 않게 한다
+    if (Date.now() - opTouchedAt > 2000) {
+      opacity = state.opacity || 1;
+      opSlider.value = String(Math.round(opacity * 100));
+      applyCtrlOpacity();
+    }
+
+    const seen = new Set();
+    const fresh = [];
+    for (const s of list) {
+      seen.add(s.cwd);
+      let c = cards.get(s.cwd);
+      if (!c) {
+        c = makeCard(s.cwd);
+        cards.set(s.cwd, c);
+        document.body.appendChild(c.el);
+      }
+      c.state = s;
+      // 막 드랍해서 저장이 도는 중인 카드는 옛 y가 덮지 않게 잠시 보호한다
+      if (s.y != null && Date.now() - c.movedAt > 2000) c.baseY = s.y;
+      c.name.textContent = s.name || '';
+      c.name.title = s.cwd + (s.origin ? '\n출처: ' + s.origin : '') + '\n클릭하면 해당 창이 열립니다';
+      c.msg.textContent = s.message || '';
+      c.msg.title = s.message || '';
+      c.desc.textContent = s.desc || '';
+      c.desc.title = s.desc || '';
+      c.err.textContent = s.err || '';
+      c.el.classList.toggle('alert', !!s.alert);
+      c.el.classList.toggle('input', s.kind === 'input');
+      // 내용에 따라 달라진 폭을 재서, 접혔을 때 밀어넣는 거리를 갱신한다
+      c.el.style.setProperty('--peek-x', c.el.offsetWidth - 16 + 'px');
+      applyOut(c);
+      applyOpacity(c);
+      if (c.baseY == null) fresh.push(c);
+    }
+    for (const [cwd, c] of [...cards]) {
+      if (!seen.has(cwd)) {
+        if (drag && drag.card === c) {
+          drag = null;
+          c.el.classList.remove('dragging');
+        }
+        c.el.remove();
+        cards.delete(cwd);
+      }
+    }
+    // 위치가 없는 새 카드는 기존 카드들 아래 빈자리에 차례로 배치하고 저장한다
+    if (fresh.length) {
+      let bottom = topMin();
+      for (const c of cards.values()) {
+        if (c.baseY != null) bottom = Math.max(bottom, c.baseY + c.el.offsetHeight + GAP + 2);
+      }
+      const assigned = {};
+      for (const c of fresh) {
+        c.baseY = bottom;
+        assigned[c.el.dataset.cwd] = bottom;
+        bottom += c.el.offsetHeight + GAP + 2;
+      }
+      window.api.setY(assigned);
+    }
+    layout();
+  });
+</script>
+</body>
+</html>
