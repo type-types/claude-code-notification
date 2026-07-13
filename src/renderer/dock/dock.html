@@ -79,7 +79,10 @@
      밀려 들어가 왼쪽 가장자리 16px만 보이고, hover / 전체 펼침 / 알림 시
      왼쪽으로 튀어나온다. 폭은 내용 길이에 맞추므로 밀어넣는 거리는 JS가
      카드별로 측정해 --peek-x 변수로 넣는다. top 변화는 부드럽게 움직여서
-     겹침 해소로 밀려나는 모습이 자연스럽다 */
+     겹침 해소로 밀려나는 모습이 자연스럽다.
+     불변식: 접혔을 때 보이는 폭(16px) <= 테두리(1px) + 왼쪽 여백(18px).
+     글자는 여백 안으로 들어올 수 없으므로, 접힌 띠에 글자 조각이
+     보이는 일이 구조적으로 없다. 보이는 폭을 키우면 여백도 같이 키울 것 */
   .card {
     position: absolute;
     right: 0;
@@ -92,7 +95,7 @@
     border: 1px solid rgba(0, 0, 0, 0.2);
     border-right: none;
     color: #1c1c1e;
-    padding: 13px 12px;
+    padding: 13px 12px 13px 18px;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -294,27 +297,17 @@
     applyGlobalOpacity();
   });
 
-  // 화면 표시용 배치. 알림 카드들은 온 순서 역순(최신이 위)으로 도크
-  // 맨 위에 모아 쌓고, 나머지는 저장 위치(baseY)를 그대로 쓰되 알림
-  // 스택이나 위 카드와 겹치면 화면에서만 아래로 민다. 저장 위치는
-  // 건드리지 않아 알림이 풀리면 모두 제자리로 돌아온다. 드래그 중인
-  // 카드는 건드리지 않는다.
+  // 화면 표시용 배치: 카드는 저장 위치(baseY)를 그대로 쓴다. 알림으로
+  // 카드가 제자리에서 커져 아래 카드와 겹치면 화면에서만 아래로 민다.
+  // 저장 위치는 건드리지 않아 알림이 풀리면 모두 제자리로 돌아온다.
+  // 드래그 중인 카드는 건드리지 않는다. 알림 사이의 순서(최신 우선)는
+  // 위치가 아니라 글로우와 전역 단축키 대상 선정에만 쓰인다.
   function layout() {
-    const items = [...cards.values()].filter(
-      (c) => c.baseY != null && !(drag && drag.card === c)
-    );
-    const alerts = items
-      .filter((c) => c.state && c.state.alert)
-      .sort((a, b) => b.state.alertTs - a.state.alertTs);
-    const normal = items
-      .filter((c) => !(c.state && c.state.alert))
+    const items = [...cards.values()]
+      .filter((c) => c.baseY != null && !(drag && drag.card === c))
       .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.cwd < b.el.dataset.cwd ? -1 : 1));
     let cursor = topMin();
-    for (const c of alerts) {
-      c.el.style.top = cursor + 'px';
-      cursor += c.el.offsetHeight + GAP;
-    }
-    for (const c of normal) {
+    for (const c of items) {
       const y = Math.max(c.baseY, cursor);
       c.el.style.top = y + 'px';
       cursor = y + c.el.offsetHeight + GAP;
