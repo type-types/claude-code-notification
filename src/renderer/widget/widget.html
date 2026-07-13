@@ -134,7 +134,7 @@
 
   window.api.onState((s) => {
     nameEl.textContent = s.name || '';
-    nameEl.title = s.name || '';
+    nameEl.title = (s.cwd || s.name || '') + (s.origin ? '\n출처: ' + s.origin : '');
     msgEl.textContent = s.message || '';
     msgEl.title = (s.message || '') + '\n클릭하면 해당 VSC 창이 열립니다';
     descEl.textContent = s.desc || '';

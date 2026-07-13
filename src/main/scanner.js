@@ -8,6 +8,7 @@ class Scanner {
   constructor(sessions) {
     this.sessions = sessions;
     this.timer = null;
+    this.originCache = new Map();
   }
 
   start() {
@@ -33,13 +34,38 @@ class Scanner {
         ['-a', '-d', 'cwd', '-p', pids.join(','), '-Fn'],
         (err2, out2) => {
           if (err2 && !out2) return;
-          const cwds = new Set();
+          const entries = [];
+          let pid = 0;
           for (const line of String(out2).split('\n')) {
-            if (line.startsWith('n/')) cwds.add(line.slice(1));
+            if (line.startsWith('p')) pid = Number(line.slice(1));
+            else if (line.startsWith('n/')) entries.push({ pid, cwd: line.slice(1) });
           }
-          this.sessions.syncScanned([...cwds]);
+          this.sessions.syncScanned(entries.map((e) => e.cwd));
+          for (const e of entries) this.fillOrigin(e);
         }
       );
+    });
+  }
+
+  // hook 이벤트 없이 스캔으로만 잡힌 세션의 출처를 프로세스 환경변수로 알아낸다
+  fillOrigin(e) {
+    const s = this.sessions.map.get(e.cwd);
+    if (!s || s.origin) return;
+    const cached = this.originCache.get(e.pid);
+    if (cached) {
+      this.sessions.setOrigin(e.cwd, cached);
+      return;
+    }
+    execFile('/bin/ps', ['eww', '-o', 'command=', '-p', String(e.pid)], (err, out) => {
+      if (err) return;
+      const origin = { termProgram: '', bundleId: '' };
+      const tm = String(out).match(/(?:^|\s)TERM_PROGRAM=(\S+)/);
+      const bm = String(out).match(/(?:^|\s)__CFBundleIdentifier=(\S+)/);
+      if (tm) origin.termProgram = tm[1];
+      if (bm) origin.bundleId = bm[1];
+      if (!origin.termProgram && !origin.bundleId) return;
+      this.originCache.set(e.pid, origin);
+      this.sessions.setOrigin(e.cwd, origin);
     });
   }
 }

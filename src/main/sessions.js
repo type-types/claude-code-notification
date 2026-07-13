@@ -121,6 +121,12 @@ class Sessions extends EventEmitter {
     } else if (type === 'session_end') {
       this.remove(cwd);
     }
+    if (evt.term_program || evt.bundle_id) {
+      this.setOrigin(cwd, {
+        termProgram: evt.term_program || '',
+        bundleId: evt.bundle_id || '',
+      });
+    }
   }
 
   // 도구 실행 이벤트로 알림을 해소한다. 권한 알림은 같은 이름의 도구가
@@ -141,6 +147,7 @@ class Sessions extends EventEmitter {
         name: path.basename(cwd),
         alert: null,
         stopped: false,
+        origin: null,
         err: '',
         lastEvent: Date.now(),
         win: null,
@@ -281,6 +288,24 @@ class Sessions extends EventEmitter {
     this.emit('pending-changed');
   }
 
+  setOrigin(cwd, origin) {
+    const s = this.map.get(cwd);
+    if (!s || s.origin || !origin) return;
+    s.origin = origin;
+    this.sendState(s);
+  }
+
+  // 위젯 툴팁에 표시할 세션 출처 이름
+  originLabel(s) {
+    const o = s.origin;
+    if (!o) return '';
+    if (o.termProgram === 'vscode') return 'VS Code';
+    if (/anthropic|claude/i.test(o.bundleId || '')) return 'Claude 앱';
+    if (o.termProgram === 'iTerm.app') return 'iTerm';
+    if (o.termProgram === 'Apple_Terminal') return 'Terminal';
+    return o.termProgram || o.bundleId || '';
+  }
+
   setError(s, msg) {
     s.err = msg;
     this.applySize(s);
@@ -372,6 +397,8 @@ class Sessions extends EventEmitter {
     if (!s.win || s.win.isDestroyed()) return;
     s.win.webContents.send('state', {
       name: s.name,
+      cwd: s.cwd,
+      origin: this.originLabel(s),
       alert: !!s.alert,
       kind: s.alert ? s.alert.kind : '',
       message: s.alert ? s.alert.message : '',

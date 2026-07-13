@@ -7,6 +7,7 @@ const {
   systemPreferences,
 } = require('electron');
 const path = require('path');
+const os = require('os');
 const Config = require('./config');
 const Sound = require('./sound');
 const startServer = require('./server');
@@ -50,6 +51,16 @@ app.on('window-all-closed', () => {
   // 위젯이 모두 닫혀도 메뉴바에 상주한다
 });
 
+// 창 제목 매칭 후보: 세션 폴더 이름과 그 상위 폴더 이름들 (홈 디렉토리 위는 제외).
+// 워크스페이스 하위 폴더에서 실행한 세션도 워크스페이스 이름으로 창을 찾게 한다.
+function titleCandidates(cwd) {
+  const home = os.homedir();
+  const rel = cwd.startsWith(home + '/') ? cwd.slice(home.length + 1) : cwd;
+  const parts = rel.split('/').filter(Boolean);
+  const candidates = parts.reverse().slice(0, 3);
+  return candidates.length ? candidates : [path.basename(cwd)];
+}
+
 // claude 프로세스에 SIGTERM을 보내고, 잠시 후 부모 셸도 종료해
 // VSC 터미널 탭까지 닫는다. 위젯은 즉시 제거한다 (스캔, hook 정리와 별개).
 function killSession(sessions, s) {
@@ -90,14 +101,31 @@ function setupIpc(sessions) {
   ipcMain.on('focus', (e) => {
     const s = sessions.findByWebContents(e.sender.id);
     if (!s) return;
+    const o = s.origin || {};
+    const isVscode =
+      (!o.termProgram && !o.bundleId) ||
+      o.termProgram === 'vscode' ||
+      /vscode/i.test(o.bundleId || '');
+    if (!isVscode && o.bundleId) {
+      // VSC가 아닌 출처(Claude 앱, iTerm 등)는 해당 앱을 앞으로 가져온다
+      permission.activateApp(o.bundleId, (result) => {
+        console.log('[focus] ' + s.cwd + ' app ' + o.bundleId + ' -> ' + result);
+      });
+      return;
+    }
     if (!systemPreferences.isTrustedAccessibilityClient(true)) {
       sessions.setError(s, '손쉬운 사용 권한 필요');
       return;
     }
-    permission.focus(path.basename(s.cwd), (result) => {
+    permission.focus(titleCandidates(s.cwd), (result) => {
       console.log('[focus] ' + s.cwd + ' -> ' + result);
       if (result !== 'OK' && sessions.map.has(s.cwd)) {
-        sessions.setError(s, '창을 찾을 수 없음');
+        if (o.termProgram === 'vscode') {
+          // 제목 매칭 실패 시 VSC 앱이라도 앞으로 가져온다
+          permission.activateApp(o.bundleId || 'com.microsoft.VSCode');
+        } else {
+          sessions.setError(s, '창을 찾을 수 없음');
+        }
       }
     });
   });

@@ -6,8 +6,12 @@
 TYPE="${1:-unknown}"
 PORT="${CC_NOTIFY_PORT:-48923}"
 
+# hook은 세션 프로세스의 환경을 물려받으므로, 어느 앱의 터미널에서 나온
+# 세션인지(VS Code, iTerm, Claude 앱 등) 헤더로 함께 전달한다.
 curl -s -m 1 -X POST "http://127.0.0.1:${PORT}/event?type=${TYPE}" \
   -H 'Content-Type: application/json' \
+  -H "X-Term-Program: ${TERM_PROGRAM:-}" \
+  -H "X-Bundle-Id: ${__CFBundleIdentifier:-}" \
   --data-binary @- >/dev/null 2>&1
 
 exit 0

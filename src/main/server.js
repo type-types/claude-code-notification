@@ -15,6 +15,8 @@ function startServer(port, onEvent) {
         try {
           const evt = JSON.parse(body);
           if (!evt.type) evt.type = url.searchParams.get('type') || '';
+          if (req.headers['x-term-program']) evt.term_program = req.headers['x-term-program'];
+          if (req.headers['x-bundle-id']) evt.bundle_id = req.headers['x-bundle-id'];
           onEvent(evt);
         } catch (e) {
           console.error('[server] bad payload: ' + e.message);
