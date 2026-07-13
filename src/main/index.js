@@ -39,7 +39,7 @@ app.whenReady().then(() => {
 
   startServer(cfg.get('port'), (evt) => sessions.handleEvent(evt));
   new Scanner(sessions).start();
-  setupIpc(cfg, sessions);
+  setupIpc(sessions);
   setupTray(cfg, border, sessions);
 
   const trusted = systemPreferences.isTrustedAccessibilityClient(false);
@@ -50,24 +50,7 @@ app.on('window-all-closed', () => {
   // 위젯이 모두 닫혀도 메뉴바에 상주한다
 });
 
-function setupIpc(cfg, sessions) {
-  ipcMain.on('approve', (e) => {
-    const s = sessions.findByWebContents(e.sender.id);
-    if (!s || !s.alert || s.pendingApprove) return;
-    if (!systemPreferences.isTrustedAccessibilityClient(true)) {
-      sessions.setError(s, '손쉬운 사용 권한 필요');
-      return;
-    }
-    const folder = path.basename(s.cwd);
-    permission.approve(folder, cfg.get('approveKey'), (result) => {
-      console.log('[approve] ' + s.cwd + ' -> ' + result);
-      if (!sessions.map.has(s.cwd)) return;
-      if (result === 'OK') sessions.markApprovePending(s);
-      else if (result === 'MISMATCH') sessions.setError(s, '창 확인 실패');
-      else sessions.setError(s, '창을 찾을 수 없음');
-    });
-  });
-
+function setupIpc(sessions) {
   ipcMain.on('focus', (e) => {
     const s = sessions.findByWebContents(e.sender.id);
     if (!s) return;

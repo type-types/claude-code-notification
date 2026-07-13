@@ -1,5 +1,7 @@
 #!/bin/bash
-# ~/.claude/settings.json에 4개 hook(SessionStart, Notification, Stop, SessionEnd)을 등록한다.
+# ~/.claude/settings.json에 알림 오버레이용 hook 8개를 등록한다.
+# (SessionStart, PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit,
+#  Notification, Stop, SessionEnd)
 # 기존 설정은 보존하며, 쓰기 전에 settings.json.bak으로 백업한다.
 set -e
 
@@ -28,6 +30,8 @@ mapping = {
     'SessionStart': 'session_start',
     'PreToolUse': 'pre_tool_use',
     'PostToolUse': 'post_tool_use',
+    'PermissionRequest': 'permission_request',
+    'UserPromptSubmit': 'user_prompt_submit',
     'Notification': 'notification',
     'Stop': 'stop',
     'SessionEnd': 'session_end',

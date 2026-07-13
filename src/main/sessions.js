@@ -5,11 +5,12 @@ const EventEmitter = require('events');
 const W_MIN = 160;
 const W_MAX = 240;
 const H_NORMAL = 36;
-const H_ALERT = 92;
-const H_ALERT_DESC = 106;
+const H_ALERT = 70;
+const H_ALERT_DESC = 84;
 const STACK_STEP = 44;
+const H_INPUT = 52;
+const H_ERR = 15;
 const STALE_MS = 4 * 60 * 60 * 1000;
-const APPROVE_RETRY_MS = 60 * 1000;
 const ERR_CLEAR_MS = 3000;
 
 // 세션이 2개 이상 같은 마지막 이름을 가지면 구분될 때까지 상위 경로를 붙인다.
@@ -39,6 +40,25 @@ function computeDisplayNames(cwds) {
   return new Map(cwds.map((c) => [c, label(c)]));
 }
 
+// 도구 이름과 입력으로 어떤 작업에 대한 허용인지 요약한다.
+function formatTool(name, input) {
+  input = input || {};
+  let detail = '';
+  let desc = '';
+  if (name === 'Bash') {
+    detail = input.command || '';
+    desc = input.description || '';
+  } else if (input.file_path) detail = input.file_path;
+  else if (input.url) detail = input.url;
+  else {
+    const j = JSON.stringify(input);
+    detail = j && j !== '{}' ? j : '';
+  }
+  let text = detail ? name + ': ' + detail : name;
+  if (text.length > 300) text = text.slice(0, 300) + '...';
+  return { text, desc, name: name || '' };
+}
+
 class Sessions extends EventEmitter {
   constructor(cfg) {
     super();
@@ -54,22 +74,62 @@ class Sessions extends EventEmitter {
     console.log('[event] ' + type + ' ' + cwd);
     if (type === 'session_start') {
       this.ensure(cwd, evt.session_id);
+    } else if (type === 'permission_request') {
+      // 권한 다이얼로그가 뜨는 순간 발화하는 hook. Notification보다 훨씬 빠르므로
+      // 권한 알림의 주 경로로 사용한다.
+      const s = this.ensure(cwd, evt.session_id);
+      s.stopped = false;
+      let name = evt.tool_name || '';
+      let d;
+      if (name) {
+        d = formatTool(name, evt.tool_input || {});
+      } else {
+        // 페이로드에 도구 정보가 없으면 직전 PreToolUse 내용으로 보완한다
+        d = this.toolDetail(s);
+        name = d.name;
+      }
+      this.setAlert(s, d.text || 'Claude가 허용을 기다리는 중', d.desc, 'permission', name);
     } else if (type === 'pre_tool_use') {
       const s = this.ensure(cwd, evt.session_id);
-      if (s.alert) this.resolveAlert(s);
+      s.stopped = false;
+      this.resolveIfMatches(s, evt.tool_name || '');
       s.lastTool = { name: evt.tool_name || '', input: evt.tool_input || {}, ts: Date.now() };
     } else if (type === 'post_tool_use') {
       const s = this.ensure(cwd, evt.session_id);
-      if (s.alert) this.resolveAlert(s);
+      this.resolveIfMatches(s, evt.tool_name || '');
+    } else if (type === 'user_prompt_submit') {
+      // 사용자가 직접 입력을 보냈으면 어떤 알림이든 응답된 것이다
+      const s = this.ensure(cwd, evt.session_id);
+      s.stopped = false;
+      this.resolveAlert(s);
     } else if (type === 'notification') {
       const s = this.ensure(cwd, evt.session_id);
-      const d = this.toolDetail(s);
-      this.setAlert(s, d.text || evt.message || '', d.desc);
+      const msg = evt.message || '';
+      if (/waiting for your input/i.test(msg)) {
+        // 유휴 알림: 턴이 끝난 뒤(요청받은 것이 없는 상태)면 무시하고,
+        // 진행 중 입력 대기(질문 등)일 때만 허용 버튼 없는 알림으로 표시한다
+        if (!s.stopped && !s.alert) this.setAlert(s, '입력 대기 중', '', 'input', '');
+      } else if (!(s.alert && s.alert.kind === 'permission')) {
+        // permission_request가 이미 알림을 띄웠으면 중복 발화하지 않는다 (fallback 경로)
+        const d = this.toolDetail(s);
+        this.setAlert(s, d.text || msg, d.desc, 'permission', d.name);
+      }
     } else if (type === 'stop') {
-      this.resolveAlert(this.ensure(cwd, evt.session_id));
+      const s = this.ensure(cwd, evt.session_id);
+      s.stopped = true;
+      this.resolveAlert(s);
     } else if (type === 'session_end') {
       this.remove(cwd);
     }
+  }
+
+  // 도구 실행 이벤트로 알림을 해소한다. 권한 알림은 같은 이름의 도구가
+  // 실제로 실행됐을 때만 지워서, 병렬 도구나 서브에이전트의 이벤트가
+  // 아직 대기 중인 권한 알림을 지워버리는 것을 막는다.
+  resolveIfMatches(s, toolName) {
+    if (!s.alert) return;
+    if (s.alert.kind === 'permission' && s.alert.toolName && s.alert.toolName !== toolName) return;
+    this.resolveAlert(s);
   }
 
   ensure(cwd, sessionId) {
@@ -80,12 +140,11 @@ class Sessions extends EventEmitter {
         sessionId: sessionId || '',
         name: path.basename(cwd),
         alert: null,
-        pendingApprove: false,
+        stopped: false,
         err: '',
         lastEvent: Date.now(),
         win: null,
         dragTimer: null,
-        approveTimer: null,
         errTimer: null,
       };
       this.map.set(cwd, s);
@@ -153,12 +212,19 @@ class Sessions extends EventEmitter {
   applySize(s) {
     if (!s.win || s.win.isDestroyed()) return;
     const b = s.win.getBounds();
+    const base = !s.alert
+      ? H_NORMAL
+      : s.alert.kind === 'input'
+        ? H_INPUT
+        : s.alert.desc
+          ? H_ALERT_DESC
+          : H_ALERT;
     s.win.setBounds(
       {
         x: b.x,
         y: b.y,
         width: s.alert ? W_MAX : this.widthFor(s),
-        height: s.alert ? (s.alert.desc ? H_ALERT_DESC : H_ALERT) : H_NORMAL,
+        height: base + (s.err ? H_ERR : 0),
       },
       true
     );
@@ -181,28 +247,24 @@ class Sessions extends EventEmitter {
   // 최근 것만 사용하고 오래된 것(유휴 알림 등)은 일반 메시지로 둔다.
   toolDetail(s) {
     const t = s.lastTool;
-    if (!t || Date.now() - t.ts > 30 * 1000) return { text: '', desc: '' };
-    const input = t.input || {};
-    let detail = '';
-    let desc = '';
-    if (t.name === 'Bash') {
-      detail = input.command || '';
-      desc = input.description || '';
-    } else if (input.file_path) detail = input.file_path;
-    else if (input.url) detail = input.url;
-    else {
-      const j = JSON.stringify(input);
-      detail = j && j !== '{}' ? j : '';
-    }
-    let text = detail ? t.name + ': ' + detail : t.name;
-    if (text.length > 300) text = text.slice(0, 300) + '...';
-    return { text, desc };
+    if (!t || Date.now() - t.ts > 30 * 1000) return { text: '', desc: '', name: '' };
+    return formatTool(t.name, t.input);
   }
 
-  setAlert(s, message, desc) {
-    if (s.approveTimer) clearTimeout(s.approveTimer);
-    s.alert = { message, desc: desc || '', ts: Date.now() };
-    s.pendingApprove = false;
+  setAlert(s, message, desc, kind, toolName) {
+    // 같은 알림의 중복 발화(permission_request와 notification이 둘 다 오는 경우)는
+    // 소리와 번쩍임 없이 시각만 갱신한다
+    if (s.alert && s.alert.kind === (kind || 'permission') && s.alert.message === message) {
+      s.alert.ts = Date.now();
+      return;
+    }
+    s.alert = {
+      message,
+      desc: desc || '',
+      kind: kind || 'permission',
+      toolName: toolName || '',
+      ts: Date.now(),
+    };
     s.err = '';
     this.applySize(s);
     this.sendState(s);
@@ -212,32 +274,21 @@ class Sessions extends EventEmitter {
 
   resolveAlert(s) {
     if (!s.alert) return;
-    if (s.approveTimer) clearTimeout(s.approveTimer);
     s.alert = null;
-    s.pendingApprove = false;
     s.err = '';
     this.applySize(s);
     this.sendState(s);
     this.emit('pending-changed');
   }
 
-  markApprovePending(s) {
-    s.pendingApprove = true;
-    this.sendState(s);
-    s.approveTimer = setTimeout(() => {
-      if (s.alert && s.pendingApprove) {
-        s.pendingApprove = false;
-        this.sendState(s);
-      }
-    }, APPROVE_RETRY_MS);
-  }
-
   setError(s, msg) {
     s.err = msg;
+    this.applySize(s);
     this.sendState(s);
     if (s.errTimer) clearTimeout(s.errTimer);
     s.errTimer = setTimeout(() => {
       s.err = '';
+      this.applySize(s);
       this.sendState(s);
     }, ERR_CLEAR_MS);
   }
@@ -246,7 +297,6 @@ class Sessions extends EventEmitter {
     const s = this.map.get(cwd);
     if (!s) return;
     if (s.dragTimer) clearInterval(s.dragTimer);
-    if (s.approveTimer) clearTimeout(s.approveTimer);
     if (s.errTimer) clearTimeout(s.errTimer);
     if (s.win && !s.win.isDestroyed()) s.win.destroy();
     this.map.delete(cwd);
@@ -323,9 +373,9 @@ class Sessions extends EventEmitter {
     s.win.webContents.send('state', {
       name: s.name,
       alert: !!s.alert,
+      kind: s.alert ? s.alert.kind : '',
       message: s.alert ? s.alert.message : '',
       desc: s.alert ? s.alert.desc : '',
-      pending: s.pendingApprove,
       err: s.err,
     });
   }

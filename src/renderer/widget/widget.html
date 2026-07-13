@@ -69,43 +69,12 @@
   #desc:empty {
     display: none !important;
   }
-  #sub {
-    display: none;
-    align-items: center;
-    gap: 6px;
-    min-height: 20px;
+  body.input-kind #card {
+    background: rgba(190, 220, 255, 0.92);
+    border-color: rgba(40, 100, 190, 0.7);
   }
-  body.alert #sub {
-    display: flex;
-  }
-  #approve {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 2px 12px;
-    border-radius: 6px;
-    border: 1px solid rgba(120, 70, 0, 0.4);
-    background: #c9820e;
-    color: #fff;
-    cursor: pointer;
-  }
-  #approve:hover {
-    background: #b57209;
-  }
-  #approve:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  #spin {
-    display: none;
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    border: 2px solid rgba(90, 60, 0, 0.3);
-    border-top-color: #5a3c00;
-    animation: spin 0.8s linear infinite;
-  }
-  body.pending #spin {
-    display: inline-block;
+  body.input-kind #msg {
+    color: #123c6e;
   }
   #err {
     font-size: 10px;
@@ -114,8 +83,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
+  #err:empty {
+    display: none;
   }
 </style>
 </head>
@@ -124,17 +93,12 @@
     <div id="name"></div>
     <div id="msg"></div>
     <div id="desc"></div>
-    <div id="sub">
-      <button id="approve">허용</button>
-      <span id="spin"></span>
-      <span id="err"></span>
-    </div>
+    <div id="err"></div>
   </div>
 <script>
   const nameEl = document.getElementById('name');
   const msgEl = document.getElementById('msg');
   const descEl = document.getElementById('desc');
-  const approveEl = document.getElementById('approve');
   const errEl = document.getElementById('err');
 
   window.api.onState((s) => {
@@ -145,14 +109,8 @@
     descEl.textContent = s.desc || '';
     descEl.title = s.desc || '';
     document.body.classList.toggle('alert', !!s.alert);
-    document.body.classList.toggle('pending', !!s.pending);
-    approveEl.disabled = !!s.pending;
+    document.body.classList.toggle('input-kind', s.kind === 'input');
     errEl.textContent = s.err || '';
-  });
-
-  approveEl.addEventListener('click', (e) => {
-    e.stopPropagation();
-    window.api.approve();
   });
 
   // 클릭이면 VSC 창 열기, 4px 이상 움직이면 드래그 이동
@@ -161,7 +119,6 @@
 
   document.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (e.target.closest('#approve')) return;
     downAt = { x: e.screenX, y: e.screenY };
     dragging = false;
   });

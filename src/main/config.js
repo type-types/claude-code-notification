@@ -7,7 +7,6 @@ const DEFAULTS = {
   muted: false,
   idleGlow: true,
   soundPath: '/System/Library/Sounds/Glass.aiff',
-  approveKey: 'return',
   positions: {},
 };
 
