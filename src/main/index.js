@@ -187,6 +187,13 @@ function setupIpc(sessions, dock) {
     focusSession(sessions, s);
   });
 
+  // x 버튼: 창 전환 없이 알림만 해소한다 (다른 화면을 보던 중 일단 닫기)
+  ipcMain.on('dismiss', (e, cwd) => {
+    const s = sessions.map.get(cwd);
+    if (!s) return;
+    sessions.resolveAlert(s);
+  });
+
   ipcMain.on('set-card-y', (e, map) => {
     if (map && typeof map === 'object' && !Array.isArray(map)) sessions.setCardY(map);
   });

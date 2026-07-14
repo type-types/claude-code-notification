@@ -314,6 +314,34 @@
   .card.alert:hover {
     animation-play-state: paused;
   }
+  /* 알림만 닫기 버튼: 카드 우상단, 알림 카드에 hover했을 때만 나타난다.
+     카드 클릭(창 전환 + 해소)과 달리 창 전환 없이 알림만 해소한다.
+     다른 화면을 보던 중 알림을 일단 치우고 생각하고 싶을 때 쓴다.
+     오른쪽 11px이 화면 밖에 묻히므로 right는 그만큼 안쪽으로 잡는다 */
+  .x {
+    position: absolute;
+    top: 4px;
+    right: 15px;
+    width: 16px;
+    height: 16px;
+    line-height: 16px;
+    text-align: center;
+    border-radius: 8px;
+    font-size: 9px;
+    color: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.08);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+  }
+  .card.alert:hover .x {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .x:hover {
+    background: rgba(0, 0, 0, 0.18);
+    color: rgba(0, 0, 0, 0.85);
+  }
   /* 상태 2종: 세션은 항상 작업 중이거나 입력 대기다.
      작업 중은 보라색 숨쉬기, 입력 대기(유휴)는 옅은 파란 기운.
      파랑은 내 차례, 보라는 Claude 차례라는 의미로 알림 색과도 이어진다.
@@ -611,7 +639,8 @@
     el.innerHTML =
       '<div class="spin"></div>' +
       '<div class="name"></div><div class="msg"></div>' +
-      '<div class="desc"></div><div class="err"></div>';
+      '<div class="desc"></div><div class="err"></div>' +
+      '<div class="x" title="알림만 닫기 (창 전환 없음)">✕</div>';
     const c = {
       el,
       name: el.querySelector('.name'),
@@ -639,6 +668,18 @@
     el.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       down = { c, y: e.screenY };
+    });
+
+    // x 버튼: 카드 클릭(창 전환)과 드래그로 번지지 않게 mousedown부터 끊고,
+    // 창 전환 없이 알림만 해소한다. 커서가 아직 카드 위여도 바로 접히도록
+    // 카드 클릭 해소와 같은 suppressHover를 쓴다
+    const x = el.querySelector('.x');
+    x.addEventListener('mousedown', (e) => e.stopPropagation());
+    x.addEventListener('mouseup', (e) => e.stopPropagation());
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      c.suppressHover = true;
+      window.api.dismiss(cwd);
     });
 
     return c;
