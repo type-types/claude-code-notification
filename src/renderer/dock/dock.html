@@ -14,37 +14,56 @@
     /* max-content <-> 고정폭 사이의 width 전환을 허용 (알림 해소 시 부드럽게 줄어들도록) */
     interpolate-size: allow-keywords;
   }
-  /* 컨트롤 패널: 맨 위에 상시 노출. 접혀 있으면 [<] 버튼만 보이고,
-     누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더가 나타난다 */
+  /* 컨트롤 패널: 맨 위에 상시 노출. 접혀 있으면 [<] 버튼과 세션 사용량 %만
+     보이고, 누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더 +
+     사용량 게이지가 나타난다. 카드처럼 오른쪽 11px를 화면 밖에 묻어
+     바운스 때 온전한 모서리가 드러난다 (접힘 폭 26 = 148 - 111 - 11) */
   #ctrl {
     position: absolute;
     top: 14px;
-    right: 0;
+    right: -11px;
     width: 148px;
     box-sizing: border-box;
     display: flex;
     align-items: stretch;
-    border-radius: 10px 0 0 10px;
+    border-radius: 10px;
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(0, 0, 0, 0.2);
-    border-right: none;
-    transform: translateX(122px);
+    transform: translateX(111px);
     transition: transform 0.22s ease;
     z-index: 5;
   }
   #ctrl.out {
     transform: translateX(0);
   }
+  /* 사용량 계단 돌파 알림: 패널도 카드와 같은 문법으로 바운스한다 */
+  #ctrl.boing {
+    transform-origin: right center;
+    animation: boing 3s 2;
+  }
   #toggle {
     flex: 0 0 26px;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 1px;
     font-size: 14px;
     color: rgba(0, 0, 0, 0.55);
     border-right: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 10px 0 0 10px;
     cursor: pointer;
+  }
+  /* 접혀 있어도 보이는 세션 사용량 % */
+  #tPct {
+    font-size: 7.5px;
+    color: rgba(0, 0, 0, 0.5);
+  }
+  #tPct:empty {
+    display: none;
+  }
+  #ctrl.usageWarn #tPct {
+    color: #c03020;
   }
   #toggle:hover {
     background: rgba(0, 0, 0, 0.06);
@@ -57,8 +76,62 @@
     flex: 1;
     min-width: 0;
     display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    /* 오른쪽 여백은 화면 밖 묻힘 11px을 더해 잡는다 */
+    padding: 9px 22px 9px 12px;
+  }
+  /* 플랜 사용량 게이지: 패널을 펼치면 슬라이더 아래에 보인다.
+     조회 실패(비공식 API 변경 등) 시에는 행이 사라진다 */
+  #usage {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+  }
+  #usage.on {
+    display: flex;
+  }
+  .uRow {
+    display: flex;
     align-items: center;
-    padding: 9px 12px;
+    gap: 5px;
+  }
+  .uLabel {
+    flex: 0 0 30px;
+    font-size: 8.5px;
+    color: rgba(0, 0, 0, 0.55);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .uBar {
+    flex: 1;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(0, 0, 0, 0.15);
+    overflow: hidden;
+  }
+  .uFill {
+    height: 100%;
+    border-radius: 2px;
+    background: #0a60c2;
+    transition: width 0.4s ease;
+  }
+  .uRow.warn .uFill {
+    background: #c87814;
+  }
+  .uRow.crit .uFill {
+    background: #c03020;
+  }
+  .uPct {
+    flex: 0 0 26px;
+    text-align: right;
+    font-size: 8.5px;
+    color: rgba(0, 0, 0, 0.6);
+  }
+  /* 사용량이 임계(80%)를 넘으면 접힌 상태의 토글 색으로도 알 수 있다 */
+  #ctrl.usageWarn #toggle {
+    color: #c03020;
   }
   /* 투명도 슬라이더: 얇은 트랙과 작은 막대형 손잡이 */
   #op {
@@ -301,15 +374,19 @@
 </head>
 <body>
   <div id="ctrl">
-    <div id="toggle" title="모두 펼치기">‹</div>
+    <div id="toggle" title="모두 펼치기"><span id="tArrow">‹</span><span id="tPct"></span></div>
     <div id="ctrlBody">
       <input id="op" type="range" min="20" max="100" step="1" value="100" title="투명도">
+      <div id="usage"></div>
     </div>
   </div>
 <script>
   const ctrl = document.getElementById('ctrl');
   const toggle = document.getElementById('toggle');
+  const tArrow = document.getElementById('tArrow');
+  const tPct = document.getElementById('tPct');
   const opSlider = document.getElementById('op');
+  const usageEl = document.getElementById('usage');
   const cards = new Map();
   const GAP = 6;
   // 상태 변화 후 CSS 전환(0.25s)이 끝나고 나서 재측정하는 시점
@@ -340,10 +417,11 @@
   // 벗어나면 해제된다.
   // settling: 알림이 막 해소된 카드는 내용과 폭 전환이 끝날 때까지 펼친 채
   // 둔다. 전환 중의 낡은 폭으로 접으면 카드가 화면 밖까지 밀려 사라진다.
+  // front: 맨 앞 창(현재 보고 있는 창)의 세션 카드는 펼쳐진 채 유지한다.
   function applyOut(c) {
     const out =
       allOut ||
-      (c.state && c.state.alert) ||
+      (c.state && (c.state.alert || c.state.front)) ||
       c.settling ||
       (c.el.matches(':hover') && !c.suppressHover) ||
       (drag && drag.card === c);
@@ -353,6 +431,58 @@
   // 접혔을 때 밀어넣는 거리 (보이는 띠 22px + 오른쪽 묻힘 11px = 33)
   function updatePeek(c) {
     c.el.style.setProperty('--peek-x', c.el.offsetWidth - 33 + 'px');
+  }
+
+  // 플랜 사용량 게이지. 값이 바뀔 때만 다시 그린다 (상태 메시지는
+  // hook 이벤트마다 오지만 사용량은 5분에 한 번 바뀐다).
+  let lastUsageJson = '';
+  function renderUsage(list) {
+    const json = JSON.stringify(list || null);
+    if (json === lastUsageJson) return;
+    lastUsageJson = json;
+    usageEl.innerHTML = '';
+    const has = Array.isArray(list) && list.length > 0;
+    usageEl.classList.toggle('on', has);
+    let warn = false;
+    if (has) {
+      for (const u of list) {
+        const row = document.createElement('div');
+        row.className = 'uRow' + (u.percent >= 95 ? ' crit' : u.percent >= 80 ? ' warn' : '');
+        if (u.percent >= 80) warn = true;
+        const reset = u.resetsAt ? new Date(u.resetsAt) : null;
+        row.title =
+          u.label + ' ' + u.percent + '% 사용' +
+          (reset ? '\n재설정: ' + reset.toLocaleString() : '');
+        row.innerHTML =
+          '<div class="uLabel"></div><div class="uBar"><div class="uFill"></div></div>' +
+          '<div class="uPct"></div>';
+        row.querySelector('.uLabel').textContent = u.label;
+        row.querySelector('.uFill').style.width = Math.min(100, u.percent) + '%';
+        row.querySelector('.uPct').textContent = u.percent + '%';
+        usageEl.appendChild(row);
+      }
+    }
+    ctrl.classList.toggle('usageWarn', warn);
+    // 접힌 토글 아래에 상시 표시하는 세션 %
+    const session = has ? list.find((u) => u.key === 'session') : null;
+    tPct.textContent = session ? session.percent + '%' : '';
+    layout();
+  }
+
+  // 사용량 계단 돌파: 패널을 잠깐 펼치고 바운스를 재생한다. 소리는 없고
+  // (진행 정보일 뿐 행동 요구가 아니다), 임계선(80, 95%)은 main이 소리와
+  // 테두리 번쩍임을 더한다.
+  let lastPulse = null;
+  let pulseTimer = 0;
+  function usagePulse() {
+    ctrl.classList.remove('boing');
+    void ctrl.offsetWidth;
+    ctrl.classList.add('out', 'boing');
+    clearTimeout(pulseTimer);
+    pulseTimer = setTimeout(() => {
+      ctrl.classList.remove('boing');
+      if (!allOut) ctrl.classList.remove('out');
+    }, 6500);
   }
 
   let settleTimer = 0;
@@ -394,7 +524,7 @@
   toggle.addEventListener('click', () => {
     allOut = !allOut;
     ctrl.classList.toggle('out', allOut);
-    toggle.textContent = allOut ? '›' : '‹';
+    tArrow.textContent = allOut ? '›' : '‹';
     toggle.title = allOut ? '모두 접기' : '모두 펼치기';
     for (const c of cards.values()) applyOut(c);
   });
@@ -562,6 +692,13 @@
 
   window.api.onState((state) => {
     const list = state.cards || [];
+    renderUsage(state.usage);
+    // 첫 상태 수신은 기준값 기록만 하고, 이후 pulse 값 변화만 알림으로 본다
+    if (state.usagePulse !== lastPulse) {
+      const first = lastPulse === null;
+      lastPulse = state.usagePulse;
+      if (!first) usagePulse();
+    }
     // 슬라이더를 막 움직인 직후에는 전송 중이던 옛 값이 덮지 않게 한다
     if (Date.now() - opTouchedAt > 2000) {
       opacity = state.opacity || 1;

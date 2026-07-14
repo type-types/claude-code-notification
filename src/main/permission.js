@@ -56,6 +56,27 @@ function focus(targets, cb) {
   run(buildScript(targets), cb);
 }
 
+// 현재 맨 앞 프로세스 이름과 창 제목. 완료 알림의 창 focus 해소에 사용한다.
+// 손쉬운 사용 권한이 없으면 ERROR가 되어 null을 돌려준다.
+function frontWindow(cb) {
+  const script = [
+    'tell application "System Events"',
+    '  set p to first process whose frontmost is true',
+    '  set t to ""',
+    '  try',
+    '    set t to name of front window of p',
+    '  end try',
+    '  return (name of p) & linefeed & t',
+    'end tell',
+  ].join('\n');
+  run(script, (result) => {
+    if (result === 'ERROR') return cb(null);
+    const idx = result.indexOf('\n');
+    if (idx < 0) return cb({ app: result, title: '' });
+    cb({ app: result.slice(0, idx), title: result.slice(idx + 1) });
+  });
+}
+
 // 창 단위 매칭이 불가능한 출처(Claude 앱, iTerm 등)는 앱 자체를 앞으로 가져온다.
 // open -b는 손쉬운 사용 권한 없이 동작한다.
 function activateApp(bundleId, cb) {
@@ -64,4 +85,4 @@ function activateApp(bundleId, cb) {
   });
 }
 
-module.exports = { focus, activateApp };
+module.exports = { focus, activateApp, frontWindow };

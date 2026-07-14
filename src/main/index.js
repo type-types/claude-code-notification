@@ -9,6 +9,7 @@ const Dock = require('./dock');
 const Border = require('./border');
 const { Scanner, findSessionProcs } = require('./scanner');
 const permission = require('./permission');
+const Usage = require('./usage');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -36,6 +37,20 @@ app.whenReady().then(() => {
 
   startServer(cfg.get('port'), (evt) => sessions.handleEvent(evt));
   new Scanner(sessions).start();
+
+  // 플랜 사용량: 5분마다 조회해 컨트롤 패널 게이지로 보낸다.
+  // 계단(세션 5%, 주간 10%) 돌파는 패널 펼침과 바운스로 소리 없이,
+  // 임계선(80, 95%) 돌파는 소리와 테두리 번쩍임까지 더해 알린다
+  const usage = new Usage();
+  usage.on('update', () => sessions.setUsage(usage.limits));
+  usage.on('step', () => sessions.pulseUsage());
+  usage.on('threshold', () => {
+    sound.play();
+    border.flash(sessions.pendingCount(), '');
+    sessions.pulseUsage();
+  });
+  usage.start();
+  startFrontWatch(sessions);
   setupIpc(sessions, dock);
   setupTray(cfg, border, sessions);
 
@@ -50,6 +65,46 @@ app.on('window-all-closed', () => {
 // 전역 단축키(Option+Enter, Option+Esc)는 2026-07-14에 제거했다.
 // 완료 알림이 상시 상태가 되면서 키를 사실상 항상 점유하게 됐고,
 // 사용자도 쓰지 않는 기능이었다. 알림 처리는 카드 클릭으로 한다.
+
+// 맨 앞 창 상시 감시 (1.5초 간격, 손쉬운 사용 권한 필요):
+// 1) 현재 보고 있는 창의 세션 카드를 펼쳐진 상태로 유지한다 (F-15)
+// 2) 완료 알림 세션의 창이 뒤에서 앞으로 나오면 알림을 해소한다 (F-10)
+// 완료 알림 오해소 방지 장치 3가지:
+// 1) 전환만 인정: 알림이 뜰 때 이미 앞에 있던 창은 기준으로만 기록한다.
+//    창을 앞에 둔 채 자리를 비운 사이 알림이 저절로 지워지는 것을 막는다.
+// 2) 세션 폴더 이름(가장 구체적 후보)만 제목과 매칭한다. 상위 폴더 이름까지
+//    쓰면 Finder 등 무관한 창에 걸린다.
+// 3) 맨 앞 앱이 터미널 계열일 때만 인정한다. 프로젝트 이름이 들어간
+//    브라우저 탭 제목 등에 걸리는 것을 막는다.
+const WATCH_APPS = new Set(['Code', 'Code - Insiders', 'Claude', 'iTerm2', 'Terminal']);
+
+function startFrontWatch(sessions) {
+  setInterval(() => pollFront(sessions), 1500);
+}
+
+function pollFront(sessions) {
+  if (!systemPreferences.isTrustedAccessibilityClient(false)) return;
+  permission.frontWindow((front) => {
+    const appOk = !!(front && WATCH_APPS.has(front.app));
+    const fronts = [];
+    for (const s of sessions.map.values()) {
+      const isFront =
+        appOk && !!front.title && front.title.includes(path.basename(s.cwd));
+      if (isFront) fronts.push(s.cwd);
+      const a = s.alert;
+      if (!a || a.kind !== 'done') continue;
+      if (a.wasFront === undefined) {
+        a.wasFront = isFront;
+      } else if (!a.wasFront && isFront) {
+        console.log('[frontwatch] window focused, resolving ' + s.cwd);
+        sessions.resolveAlert(s);
+      } else {
+        a.wasFront = isFront;
+      }
+    }
+    sessions.setFront(fronts);
+  });
+}
 
 // 창 제목 매칭 후보: 세션 폴더 이름과 그 상위 폴더 이름들 (홈 디렉토리 위는 제외).
 // 워크스페이스 하위 폴더에서 실행한 세션도 워크스페이스 이름으로 창을 찾게 한다.

@@ -74,6 +74,7 @@ class Sessions extends EventEmitter {
     this.dock = dock;
     this.map = new Map();
     this.byId = new Map();
+    this.usage = null;
     this.staleTimer = setInterval(() => {
       this.refresh();
       this.remind();
@@ -266,6 +267,28 @@ class Sessions extends EventEmitter {
     this.emit('pending-changed');
   }
 
+  // 플랜 사용량 표시 데이터 (usage.js가 5분마다 갱신). null이면 표시 안 함.
+  setUsage(limits) {
+    this.usage = limits;
+    this.refresh();
+  }
+
+  // 사용량 진행 알림. 값이 바뀔 때마다 renderer가 패널을 잠깐 펼치고
+  // 바운스를 재생한다.
+  pulseUsage() {
+    this.usagePulse = (this.usagePulse || 0) + 1;
+    this.refresh();
+  }
+
+  // 맨 앞 창에 해당하는 세션들. 해당 카드는 펼쳐진 상태를 유지한다.
+  setFront(cwds) {
+    const key = cwds.slice().sort().join('|');
+    if (key === (this.frontKey || '')) return;
+    this.frontKey = key;
+    this.frontSet = new Set(cwds);
+    this.refresh();
+  }
+
   setOrigin(cwd, origin) {
     const s = this.map.get(cwd);
     if (!s || s.origin || !origin) return;
@@ -376,6 +399,7 @@ class Sessions extends EventEmitter {
       origin: this.originLabel(s),
       alert: !!s.alert,
       working: !s.alert && !!s.turnStart,
+      front: this.frontSet ? this.frontSet.has(s.cwd) : false,
       kind: s.alert ? s.alert.kind : '',
       // 바운스 재생 키: 새 알림이나 재알림 때 값이 바뀌어 renderer가
       // 바운스를 처음부터 다시 재생한다
@@ -386,7 +410,12 @@ class Sessions extends EventEmitter {
       stale: !s.alert && now - s.lastEvent > STALE_MS,
       y: typeof ys[s.cwd] === 'number' ? ys[s.cwd] : null,
     }));
-    this.dock.send({ cards, opacity: this.cfg.get('opacity') || 1 });
+    this.dock.send({
+      cards,
+      opacity: this.cfg.get('opacity') || 1,
+      usage: this.usage,
+      usagePulse: this.usagePulse || 0,
+    });
   }
 }
 
