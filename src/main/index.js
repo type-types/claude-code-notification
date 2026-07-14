@@ -34,9 +34,9 @@ app.whenReady().then(() => {
   dock.create();
   const sessions = new Sessions(cfg, dock);
 
-  sessions.on('alert', () => {
+  sessions.on('alert', (kind) => {
     sound.play();
-    border.flash(sessions.pendingCount());
+    border.flash(sessions.pendingCount(), kind);
   });
   sessions.on('pending-changed', () => {
     border.setPending(sessions.pendingCount());
@@ -159,12 +159,11 @@ function focusSession(sessions, s) {
 function setupIpc(sessions, dock) {
   ipcMain.on('focus', (e, cwd) => {
     const s = sessions.map.get(cwd);
-    if (s) focusSession(sessions, s);
-  });
-
-  ipcMain.on('dismiss-alert', (e, cwd) => {
-    const s = sessions.map.get(cwd);
-    if (s) sessions.resolveAlert(s);
+    if (!s) return;
+    // 카드를 클릭했다는 것은 알림을 확인했다는 뜻이므로 함께 해소한다.
+    // x 버튼은 이 동작으로 대체되어 제거했다.
+    if (s.alert) sessions.resolveAlert(s);
+    focusSession(sessions, s);
   });
 
   ipcMain.on('set-card-y', (e, map) => {

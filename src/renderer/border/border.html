@@ -16,6 +16,13 @@
     opacity: 0;
     box-shadow: inset 0 0 90px 14px rgba(255, 171, 64, 0.55);
   }
+  /* 알림 종류별 번쩍임 색: 완료는 초록, 입력 대기는 파랑, 나머지는 주황 */
+  #flash.done {
+    box-shadow: inset 0 0 90px 14px rgba(52, 180, 100, 0.55);
+  }
+  #flash.input {
+    box-shadow: inset 0 0 90px 14px rgba(70, 140, 230, 0.55);
+  }
   #flash.on {
     animation: pulse 0.75s ease-in-out 2;
   }
@@ -43,8 +50,10 @@
   const flashEl = document.getElementById('flash');
   const idleEl = document.getElementById('idle');
 
-  window.api.onFlash(() => {
+  window.api.onFlash((kind) => {
     flashEl.classList.remove('on');
+    flashEl.classList.toggle('done', kind === 'done');
+    flashEl.classList.toggle('input', kind === 'input');
     void flashEl.offsetWidth;
     flashEl.classList.add('on');
   });

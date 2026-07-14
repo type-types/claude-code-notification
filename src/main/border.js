@@ -46,14 +46,14 @@ class Border {
     return win;
   }
 
-  flash(pendingCount) {
+  flash(pendingCount, kind) {
     this.pending = pendingCount;
     const now = Date.now();
     if (now < this.flashUntil) return;
     this.flashUntil = now + FLASH_MS;
     const win = this.ensureWin();
     const send = () => {
-      if (!win.isDestroyed()) win.webContents.send('flash');
+      if (!win.isDestroyed()) win.webContents.send('flash', kind || '');
     };
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
     else send();

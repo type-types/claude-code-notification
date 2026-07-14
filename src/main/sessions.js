@@ -31,6 +31,19 @@ function computeDisplayNames(cwds) {
   return new Map(cwds.map((c) => [c, label(c)]));
 }
 
+// 턴 소요 시간을 완료 알림의 부가 정보로 요약한다.
+function elapsedLabel(startTs) {
+  if (!startTs) return '';
+  const sec = Math.round((Date.now() - startTs) / 1000);
+  if (sec < 1) return '';
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return '소요 ' + h + '시간 ' + m + '분';
+  if (m) return '소요 ' + m + '분 ' + s + '초';
+  return '소요 ' + s + '초';
+}
+
 // 도구 이름과 입력으로 어떤 작업에 대한 허용인지 요약한다.
 function formatTool(name, input) {
   input = input || {};
@@ -57,7 +70,10 @@ class Sessions extends EventEmitter {
     this.dock = dock;
     this.map = new Map();
     this.byId = new Map();
-    this.staleTimer = setInterval(() => this.refresh(), 60 * 1000);
+    this.staleTimer = setInterval(() => {
+      this.refresh();
+      this.remind();
+    }, 60 * 1000);
   }
 
   handleEvent(evt) {
@@ -94,6 +110,7 @@ class Sessions extends EventEmitter {
       // 사용자가 직접 입력을 보냈으면 어떤 알림이든 응답된 것이다
       const s = this.ensure(cwd, evt.session_id);
       s.stopped = false;
+      s.turnStart = Date.now();
       this.resolveAlert(s);
     } else if (type === 'notification') {
       const s = this.ensure(cwd, evt.session_id);
@@ -108,9 +125,12 @@ class Sessions extends EventEmitter {
         this.setAlert(s, d.text || msg, d.desc, 'permission', d.name);
       }
     } else if (type === 'stop') {
+      // 턴이 끝나면 초록색 완료 알림을 띄워 다음 요청을 바로 보낼 수 있게 한다.
+      // 다음 user_prompt_submit이나 도구 실행 이벤트가 오면 해소된다.
       const s = this.ensure(cwd, evt.session_id);
       s.stopped = true;
-      this.resolveAlert(s);
+      this.setAlert(s, '작업 완료', elapsedLabel(s.turnStart), 'done', '');
+      s.turnStart = 0;
     } else if (type === 'session_end') {
       this.remove(cwd);
     }
@@ -160,6 +180,7 @@ class Sessions extends EventEmitter {
         err: '',
         lastEvent: Date.now(),
         errTimer: null,
+        turnStart: 0,
       };
       this.map.set(cwd, s);
     }
@@ -194,8 +215,23 @@ class Sessions extends EventEmitter {
     };
     s.err = '';
     this.refresh();
-    this.emit('alert');
+    this.emit('alert', s.alert.kind);
     this.emit('pending-changed');
+  }
+
+  // 해소되지 않은 알림은 1분 간격으로 소리와 테두리 번쩍임을 다시 울린다.
+  // 알림당 최대 5회까지만 반복해서, 자리를 오래 비웠을 때 소음이 되지 않게 한다.
+  // 여러 알림이 밀려 있어도 재알림은 한 번으로 합치고, 색은 최신 알림을 따른다.
+  remind() {
+    let due = null;
+    for (const s of this.map.values()) {
+      const a = s.alert;
+      if (!a || (a.reminds || 0) >= 5) continue;
+      if (Date.now() - a.ts < 55 * 1000) continue;
+      a.reminds = (a.reminds || 0) + 1;
+      if (!due || a.ts > due.ts) due = a;
+    }
+    if (due) this.emit('alert', due.kind);
   }
 
   resolveAlert(s) {
@@ -316,6 +352,7 @@ class Sessions extends EventEmitter {
       name: names.get(s.cwd),
       origin: this.originLabel(s),
       alert: !!s.alert,
+      working: !s.alert && !!s.turnStart,
       kind: s.alert ? s.alert.kind : '',
       message: s.alert ? s.alert.message : '',
       desc: s.alert ? s.alert.desc : '',
