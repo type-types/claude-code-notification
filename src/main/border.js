@@ -19,7 +19,10 @@ class Border {
       this.win.setBounds(disp.bounds);
       return this.win;
     }
+    // show: false + showInactive: 기본 show true로 창을 만들면 focusable false여도
+    // macOS가 앱을 활성화해서 사용자가 쓰던 창의 키보드 포커스를 뺏는다 (실측 확인)
     const win = new BrowserWindow({
+      show: false,
       x: disp.bounds.x,
       y: disp.bounds.y,
       width: disp.bounds.width,
@@ -42,6 +45,7 @@ class Border {
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     win.setIgnoreMouseEvents(true);
     win.loadFile(path.join(__dirname, '..', 'renderer', 'border', 'border.html'));
+    win.showInactive();
     this.win = win;
     return win;
   }

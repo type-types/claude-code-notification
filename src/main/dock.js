@@ -14,7 +14,10 @@ class Dock {
 
   create() {
     const wa = screen.getPrimaryDisplay().workArea;
+    // show: false + showInactive: 기본 show true로 창을 만들면 focusable false여도
+    // macOS가 앱을 활성화해서 앞에 있던 창의 키보드 포커스를 뺏는다 (실측 확인)
     this.win = new BrowserWindow({
+      show: false,
       x: wa.x + wa.width - DOCK_W,
       y: wa.y,
       width: DOCK_W,
@@ -36,6 +39,7 @@ class Dock {
     this.win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     this.win.setIgnoreMouseEvents(true, { forward: true });
     this.win.loadFile(path.join(__dirname, '..', 'renderer', 'dock', 'dock.html'));
+    this.win.showInactive();
     this.win.webContents.on('did-finish-load', () => this.send(this.lastList));
     screen.on('display-metrics-changed', () => this.layout());
     screen.on('display-added', () => this.layout());
