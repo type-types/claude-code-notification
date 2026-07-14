@@ -3,6 +3,10 @@ const EventEmitter = require('events');
 
 const STALE_MS = 4 * 60 * 60 * 1000;
 const ERR_CLEAR_MS = 3000;
+// 재알림 주기. 판정 문턱은 여기서 유도하므로 주기를 바꿔도 의미가 유지된다.
+const REMIND_TICK_MS = 60 * 1000;
+const REMIND_DUE_MS = REMIND_TICK_MS - 5000;
+const REMIND_MAX = 5;
 
 // 세션이 2개 이상 같은 마지막 이름을 가지면 구분될 때까지 상위 경로를 붙인다.
 function computeDisplayNames(cwds) {
@@ -73,7 +77,7 @@ class Sessions extends EventEmitter {
     this.staleTimer = setInterval(() => {
       this.refresh();
       this.remind();
-    }, 60 * 1000);
+    }, REMIND_TICK_MS);
   }
 
   handleEvent(evt) {
@@ -88,6 +92,9 @@ class Sessions extends EventEmitter {
       // 권한 알림의 주 경로로 사용한다.
       const s = this.ensure(cwd, evt.session_id);
       s.stopped = false;
+      // 턴 중간에 인식된 세션(앱 재시작, 스캐너 발견)도 작업 중으로 보이도록
+      // 프롬프트 시각이 없으면 지금을 근사값으로 채운다
+      if (!s.turnStart) s.turnStart = Date.now();
       let name = evt.tool_name || '';
       let d;
       if (name) {
@@ -101,6 +108,7 @@ class Sessions extends EventEmitter {
     } else if (type === 'pre_tool_use') {
       const s = this.ensure(cwd, evt.session_id);
       s.stopped = false;
+      if (!s.turnStart) s.turnStart = Date.now();
       this.resolveIfMatches(s, evt.tool_name || '');
       s.lastTool = { name: evt.tool_name || '', input: evt.tool_input || {}, ts: Date.now() };
     } else if (type === 'post_tool_use') {
@@ -119,8 +127,10 @@ class Sessions extends EventEmitter {
         // 유휴 알림: 턴이 끝난 뒤(요청받은 것이 없는 상태)면 무시하고,
         // 진행 중 입력 대기(질문 등)일 때만 허용 버튼 없는 알림으로 표시한다
         if (!s.stopped && !s.alert) this.setAlert(s, '입력 대기 중', '', 'input', '');
-      } else if (!(s.alert && s.alert.kind === 'permission')) {
-        // permission_request가 이미 알림을 띄웠으면 중복 발화하지 않는다 (fallback 경로)
+      } else if (!s.stopped && !(s.alert && s.alert.kind === 'permission')) {
+        // permission_request가 이미 알림을 띄웠으면 중복 발화하지 않는다 (fallback 경로).
+        // 턴 종료 후 뒤늦게 도착한 이벤트가 완료 알림을 낡은 permission 알림으로
+        // 덮지 않도록 stop 이후에는 무시한다
         const d = this.toolDetail(s);
         this.setAlert(s, d.text || msg, d.desc, 'permission', d.name);
       }
@@ -148,6 +158,10 @@ class Sessions extends EventEmitter {
   resolveIfMatches(s, toolName) {
     if (!s.alert) return;
     if (s.alert.kind === 'permission' && s.alert.toolName && s.alert.toolName !== toolName) return;
+    // hook POST는 순서 보장이 없어서, 턴의 마지막 도구 이벤트가 stop보다
+    // 늦게 도착해 방금 뜬 완료 알림을 지워버릴 수 있다. 갓 만든 완료 알림은
+    // 도구 이벤트로 지우지 않는다 (진짜 새 작업이면 2초 뒤 이벤트로 해소된다)
+    if (s.alert.kind === 'done' && Date.now() - s.alert.ts < 2000) return;
     this.resolveAlert(s);
   }
 
@@ -201,8 +215,14 @@ class Sessions extends EventEmitter {
 
   setAlert(s, message, desc, kind, toolName) {
     // 같은 알림의 중복 발화(permission_request와 notification이 둘 다 오는 경우)는
-    // 소리와 번쩍임 없이 시각만 갱신한다
-    if (s.alert && s.alert.kind === (kind || 'permission') && s.alert.message === message) {
+    // 소리와 번쩍임 없이 시각만 갱신한다. desc까지 같아야 중복으로 본다
+    // (완료 알림은 메시지가 늘 같아서 desc의 소요 시간이 유일한 차이다)
+    if (
+      s.alert &&
+      s.alert.kind === (kind || 'permission') &&
+      s.alert.message === message &&
+      s.alert.desc === (desc || '')
+    ) {
       s.alert.ts = Date.now();
       return;
     }
@@ -222,16 +242,20 @@ class Sessions extends EventEmitter {
   // 해소되지 않은 알림은 1분 간격으로 소리와 테두리 번쩍임을 다시 울린다.
   // 알림당 최대 5회까지만 반복해서, 자리를 오래 비웠을 때 소음이 되지 않게 한다.
   // 여러 알림이 밀려 있어도 재알림은 한 번으로 합치고, 색은 최신 알림을 따른다.
+  // 횟수는 실제로 울린 알림만 소진한다 (뒤로 밀린 알림이 소리 한 번 없이
+  // 예산을 다 쓰고 침묵하는 것을 막는다).
   remind() {
     let due = null;
     for (const s of this.map.values()) {
       const a = s.alert;
-      if (!a || (a.reminds || 0) >= 5) continue;
-      if (Date.now() - a.ts < 55 * 1000) continue;
-      a.reminds = (a.reminds || 0) + 1;
+      if (!a || (a.reminds || 0) >= REMIND_MAX) continue;
+      if (Date.now() - a.ts < REMIND_DUE_MS) continue;
       if (!due || a.ts > due.ts) due = a;
     }
-    if (due) this.emit('alert', due.kind);
+    if (!due) return;
+    due.reminds = (due.reminds || 0) + 1;
+    this.refresh();
+    this.emit('alert', due.kind);
   }
 
   resolveAlert(s) {
@@ -328,8 +352,7 @@ class Sessions extends EventEmitter {
     return [...this.map.values()].filter((s) => s.alert).length;
   }
 
-  // 가장 최근에 온 알림 세션. 도크 최상단에 놓이고 글로우로 강조되며,
-  // 전역 단축키(Enter 이동, Esc 닫기)의 대상이다.
+  // 가장 최근에 온 알림 세션. 글로우로 강조되고 재알림의 색 기준이 된다.
   alertTarget() {
     let target = null;
     for (const s of this.map.values()) {
@@ -354,6 +377,9 @@ class Sessions extends EventEmitter {
       alert: !!s.alert,
       working: !s.alert && !!s.turnStart,
       kind: s.alert ? s.alert.kind : '',
+      // 바운스 재생 키: 새 알림이나 재알림 때 값이 바뀌어 renderer가
+      // 바운스를 처음부터 다시 재생한다
+      bump: s.alert ? s.alert.ts + ':' + (s.alert.reminds || 0) : '',
       message: s.alert ? s.alert.message : '',
       desc: s.alert ? s.alert.desc : '',
       err: s.err,

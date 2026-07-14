@@ -1,12 +1,4 @@
-const {
-  app,
-  globalShortcut,
-  ipcMain,
-  Menu,
-  Tray,
-  nativeImage,
-  systemPreferences,
-} = require('electron');
+const { app, ipcMain, Menu, Tray, nativeImage, systemPreferences } = require('electron');
 const path = require('path');
 const os = require('os');
 const Config = require('./config');
@@ -40,7 +32,6 @@ app.whenReady().then(() => {
   });
   sessions.on('pending-changed', () => {
     border.setPending(sessions.pendingCount());
-    syncShortcuts(sessions);
   });
 
   startServer(cfg.get('port'), (evt) => sessions.handleEvent(evt));
@@ -56,34 +47,9 @@ app.on('window-all-closed', () => {
   // 위젯이 모두 닫혀도 메뉴바에 상주한다
 });
 
-app.on('will-quit', () => {
-  globalShortcut.unregisterAll();
-});
-
-// 알림이 있는 동안만 전역 단축키를 등록한다. 평소에는 시스템 단축키를
-// 점유하지 않고, 수식키 조합이라 일반 타이핑과 충돌하지 않는다.
-// 대상은 항상 가장 오래 기다린 알림 하나다 (Enter로 이동, Esc로 닫기).
-let shortcutsOn = false;
-
-function syncShortcuts(sessions) {
-  const has = sessions.pendingCount() > 0;
-  if (has && !shortcutsOn) {
-    const ok1 = globalShortcut.register('Alt+Return', () => {
-      const t = sessions.alertTarget();
-      if (t) focusSession(sessions, t);
-    });
-    const ok2 = globalShortcut.register('Alt+Escape', () => {
-      const t = sessions.alertTarget();
-      if (t) sessions.resolveAlert(t);
-    });
-    shortcutsOn = true;
-    if (!ok1 || !ok2) console.error('[shortcut] register failed ' + ok1 + '/' + ok2);
-  } else if (!has && shortcutsOn) {
-    globalShortcut.unregister('Alt+Return');
-    globalShortcut.unregister('Alt+Escape');
-    shortcutsOn = false;
-  }
-}
+// 전역 단축키(Option+Enter, Option+Esc)는 2026-07-14에 제거했다.
+// 완료 알림이 상시 상태가 되면서 키를 사실상 항상 점유하게 됐고,
+// 사용자도 쓰지 않는 기능이었다. 알림 처리는 카드 클릭으로 한다.
 
 // 창 제목 매칭 후보: 세션 폴더 이름과 그 상위 폴더 이름들 (홈 디렉토리 위는 제외).
 // 워크스페이스 하위 폴더에서 실행한 세션도 워크스페이스 이름으로 창을 찾게 한다.
