@@ -462,7 +462,7 @@
   }
 
   // 플랜 사용량 게이지. 값이 바뀔 때만 다시 그린다 (상태 메시지는
-  // hook 이벤트마다 오지만 사용량은 5분에 한 번 바뀐다).
+  // hook 이벤트마다 오지만 사용량은 가끔만 바뀐다).
   let lastUsageJson = '';
   function renderUsage(list) {
     const json = JSON.stringify(list || null);

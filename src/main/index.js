@@ -35,13 +35,11 @@ app.whenReady().then(() => {
     border.setPending(sessions.pendingCount());
   });
 
-  startServer(cfg.get('port'), (evt) => sessions.handleEvent(evt));
-  new Scanner(sessions).start();
-
-  // 플랜 사용량: 5분마다 조회해 컨트롤 패널 게이지로 보낸다.
+  // 플랜 사용량: statusline 이벤트(공식 rate_limits)로 갱신해
+  // 컨트롤 패널 게이지로 보낸다.
   // 계단(세션 5%, 주간 10%) 돌파는 패널 펼침과 바운스로 소리 없이,
   // 임계선(80, 95%) 돌파는 소리와 테두리 번쩍임까지 더해 알린다
-  const usage = new Usage();
+  const usage = new Usage(cfg);
   usage.on('update', () => sessions.setUsage(usage.limits));
   usage.on('step', () => sessions.pulseUsage());
   usage.on('threshold', () => {
@@ -50,6 +48,12 @@ app.whenReady().then(() => {
     sessions.pulseUsage();
   });
   usage.start();
+
+  startServer(cfg.get('port'), (evt) => {
+    if (evt.type === 'statusline') usage.ingest(evt);
+    else sessions.handleEvent(evt);
+  });
+  new Scanner(sessions).start();
   startFrontWatch(sessions);
   setupIpc(sessions, dock);
   setupTray(cfg, border, sessions);

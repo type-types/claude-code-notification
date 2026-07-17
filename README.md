@@ -15,7 +15,7 @@ npm install
 bash scripts/install-hooks.sh
 ```
 
-install-hooks.sh는 `~/.claude/settings.json`에 hook 8개(SessionStart, PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit, Notification, Stop, SessionEnd)를 등록합니다. 기존 설정은 보존되고, 쓰기 전에 `settings.json.bak`으로 백업됩니다. hook은 새로 시작하는 Claude Code 세션부터 적용됩니다.
+install-hooks.sh는 `~/.claude/settings.json`에 hook 8개(SessionStart, PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit, Notification, Stop, SessionEnd)와 플랜 사용량 게이지용 statusline(hooks/statusline.sh)을 등록합니다. statusline 스크립트는 화면에 아무것도 표시하지 않는 데이터 통로이며, 직접 만든 statusline이 이미 있으면 덮어쓰지 않고 알려만 줍니다. 기존 설정은 보존되고, 쓰기 전에 `settings.json.bak`으로 백업됩니다. hook은 새로 시작하는 Claude Code 세션부터 적용됩니다.
 
 ## 실행
 
@@ -66,11 +66,11 @@ open "dist/mac-arm64/CC Notify.app"
 
 - 화살표를 누르면 모든 카드를 한 번에 펼치거나 접습니다.
 - 펼치면 투명도 슬라이더가 나타납니다. 알림이 뜬 카드는 투명도와 무관하게 선명하게 표시됩니다.
-- 플랜 사용량 게이지: Claude Code의 /usage 화면과 같은 값(세션, 주간 한도 %)을 5분마다 조회해 보여줍니다. 접힌 상태에서도 세션 %는 항상 보입니다. 사용량이 일정 단위(세션 5%, 주간 10%)를 넘을 때마다 패널이 잠깐 펼쳐지며 알려주고, 80%와 95%를 넘을 때는 소리와 테두리 번쩍임으로 알립니다. 비공식 API를 쓰므로 조회가 실패하면 표시만 조용히 꺼지고 알림 기능에는 영향이 없습니다.
+- 플랜 사용량 게이지: Claude Code의 /usage 화면과 같은 값(세션, 주간 한도 %)을 보여줍니다. 세션과 주간 수치는 Claude Code의 공식 statusline 기능으로 받으므로 세션이 활동하는 동안 실시간으로 갱신되고, 모델별 주간 수치(Fable 등)는 비공식 사용량 API를 15분마다 조회해 함께 표시합니다. 접힌 상태에서도 세션 %는 항상 보입니다. 사용량이 일정 단위(세션 5%, 주간과 모델별 10%)를 넘을 때마다 패널이 잠깐 펼쳐지며 알려주고, 80%와 95%를 넘을 때는 소리와 테두리 번쩍임으로 알립니다. 모델별 수치는 조회가 실패하면 조용히 빠지며 나머지 표시에는 영향이 없습니다. 조회가 사용량 API의 호출 제한(429)에 걸리면 그날은 조회를 멈추고 다음날 0시에 자동 재개합니다 (앱을 껐다 켜도 유지).
 
 ## 권한
 
-카드 클릭으로 창을 앞으로 가져오는 기능은 macOS 손쉬운 사용(접근성) 권한이 필요합니다. 첫 클릭 시 시스템이 권한을 요청하며, 시스템 설정의 개인정보 보호 및 보안, 손쉬운 사용에서 이 앱(개발 실행 시 Electron)을 허용하면 됩니다. 플랜 사용량 표시는 Claude Code가 키체인에 저장한 로그인 토큰을 읽습니다.
+카드 클릭으로 창을 앞으로 가져오는 기능은 macOS 손쉬운 사용(접근성) 권한이 필요합니다. 첫 클릭 시 시스템이 권한을 요청하며, 시스템 설정의 개인정보 보호 및 보안, 손쉬운 사용에서 이 앱(개발 실행 시 Electron)을 허용하면 됩니다.
 
 ## 주의사항과 한계
 
@@ -81,8 +81,7 @@ open "dist/mac-arm64/CC Notify.app"
 
 ## 설정 파일
 
-- npm start로 실행 시: `~/Library/Application Support/claude-code-notification/config.json`
-- 패키징된 CC Notify.app 실행 시: `~/Library/Application Support/CC Notify/config.json`
+`~/Library/Application Support/claude-code-notification/config.json` (npm start와 패키징된 CC Notify.app 모두 같은 경로)
 
 | 키 | 기본값 | 설명 |
 |---|---|---|
@@ -92,8 +91,9 @@ open "dist/mac-arm64/CC Notify.app"
 | soundPath | /System/Library/Sounds/Glass.aiff | 알림 소리 파일 |
 | cardY | {} | 디렉토리별 카드 세로 위치 (자동 관리) |
 | opacity | 1 | 카드 투명도 (0.2 ~ 1, 슬라이더로 조절) |
+| usagePollBlockedUntil | 0 | 사용량 API 429 차단 시 다음 조회 허용 시각 (자동 관리) |
 
 ## 제거
 
 1. 메뉴바에서 종료.
-2. `~/.claude/settings.json`의 hooks에서 notify.sh가 포함된 항목을 모두 삭제 (또는 백업 settings.json.bak으로 복원).
+2. `~/.claude/settings.json`의 hooks에서 notify.sh가 포함된 항목을 모두 삭제하고, statusLine이 statusline.sh를 가리키면 그 키도 삭제 (또는 백업 settings.json.bak으로 복원).

@@ -267,7 +267,7 @@ class Sessions extends EventEmitter {
     this.emit('pending-changed');
   }
 
-  // 플랜 사용량 표시 데이터 (usage.js가 5분마다 갱신). null이면 표시 안 함.
+  // 플랜 사용량 표시 데이터 (usage.js가 statusline 이벤트로 갱신). null이면 표시 안 함.
   setUsage(limits) {
     this.usage = limits;
     this.refresh();

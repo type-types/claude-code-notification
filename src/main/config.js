@@ -9,6 +9,9 @@ const DEFAULTS = {
   soundPath: '/System/Library/Sounds/Glass.aiff',
   cardY: {},
   opacity: 1,
+  // 사용량 API가 429로 차단됐을 때 다음 조회를 허용하는 시각(epoch ms).
+  // 껐다 켜도 유지되어 재시작이 차단 페널티를 리셋시키지 않게 한다.
+  usagePollBlockedUntil: 0,
 };
 
 class Config {
