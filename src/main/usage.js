@@ -8,20 +8,26 @@ const THRESHOLDS = [80, 95];
 const STEP_SESSION = 5;
 const STEP_WEEKLY = 10;
 
-// 모델별 한도 폴링 간격. 예전에 5분 간격 + 백오프 없음으로 돌리다가
+// 모델별 한도 폴링. 예전에 5분 정주기 + 백오프 없음으로 돌리다가
 // 2026-07 rate limit 강화(429, retry-after 30분대)에 걸려 영구 차단됐다.
-// 15분으로 늘리고, 429를 받으면 그날은 접고 다음날 0시까지 물러난다
-// (config에 저장해 재시작해도 유지).
-const POLL_MS = 15 * 60 * 1000;
+// 정확한 정주기는 봇 패턴으로 감지되기 쉬우므로 15~25분 무작위 간격으로
+// 조회하되, 어떤 1시간 창을 잘라 봐도 3회를 넘지 않게 보장한다.
+// 429를 받으면 그날은 접고 다음날 0시까지 물러난다 (config에 저장해
+// 재시작해도 유지).
+const POLL_MIN_MS = 15 * 60 * 1000;
+const POLL_JITTER_MS = 10 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const MAX_PER_HOUR = 3;
 // 폴링이 계속 실패하면 오래된 모델별 수치는 오해를 부르므로 내린다.
-const MODEL_STALE_MS = 3 * POLL_MS;
+const MODEL_STALE_MS = 45 * 60 * 1000;
 
 // 플랜 사용량. 두 경로를 합친다:
 // 1) 세션(5시간)과 주간(전체) %: Claude Code의 공식 statusline 기능.
 //    hooks/statusline.sh가 stdin JSON의 rate_limits를 로컬 서버로 중계해
 //    ingest()로 들어온다. 세션이 활동하는 동안 실시간 갱신, 폴링 불필요.
 // 2) 모델별 주간 %(Fable 등): statusline에는 없어서 비공식 사용량
-//    API(/api/oauth/usage)를 키체인 토큰으로 15분마다 조회한다.
+//    API(/api/oauth/usage)를 키체인 토큰으로 15~25분 무작위 간격
+//    (시간당 최대 3회)으로 조회한다.
 //    비공식 경로라 실패할 수 있고, 실패해도 1)의 표시에는 영향이 없다.
 class Usage extends EventEmitter {
   constructor(cfg) {
@@ -35,6 +41,7 @@ class Usage extends EventEmitter {
     this.lastPercent = {};
     this.timer = null;
     this.pollTimer = null;
+    this.pollTimes = []; // 최근 조회 시각들 (시간당 횟수 제한용)
   }
 
   start() {
@@ -95,9 +102,24 @@ class Usage extends EventEmitter {
     );
   }
 
+  // 다음 조회까지의 대기 시간: 15~25분 무작위. 단, 최근 1시간 내 조회가
+  // 이미 3회면 가장 오래된 것이 1시간 밖으로 나갈 때까지 더 기다린다.
+  // 정확히 경계에 걸리지 않도록 30초 여유를 더한다.
+  nextDelay() {
+    const jittered = POLL_MIN_MS + Math.random() * POLL_JITTER_MS;
+    const now = Date.now();
+    this.pollTimes = this.pollTimes.filter((t) => now - t < HOUR_MS);
+    if (this.pollTimes.length >= MAX_PER_HOUR) {
+      const oldest = this.pollTimes[this.pollTimes.length - MAX_PER_HOUR];
+      return Math.max(jittered, oldest + HOUR_MS + 30 * 1000 - now);
+    }
+    return jittered;
+  }
+
   poll() {
+    this.pollTimes.push(Date.now());
     this.token((token) => {
-      if (!token) return this.pollFail('no token', 0);
+      if (!token) return this.pollFail('no token');
       const req = https.request(
         {
           hostname: 'api.anthropic.com',
@@ -129,12 +151,12 @@ class Usage extends EventEmitter {
               if (res.statusCode !== 200) throw new Error('http ' + res.statusCode);
               this.pollApply(JSON.parse(body));
             } catch (e) {
-              this.pollFail(e.message, 0);
+              this.pollFail(e.message);
             }
           });
         }
       );
-      req.on('error', (e) => this.pollFail(e.message, 0));
+      req.on('error', (e) => this.pollFail(e.message));
       req.on('timeout', () => req.destroy(new Error('timeout')));
       req.end();
     });
@@ -158,17 +180,17 @@ class Usage extends EventEmitter {
     this.modelsAt = Date.now();
     if (this.cfg.get('usagePollBlockedUntil')) this.cfg.set('usagePollBlockedUntil', 0);
     this.apply();
-    this.schedule(POLL_MS);
+    this.schedule(this.nextDelay());
   }
 
-  pollFail(reason, waitMs) {
+  pollFail(reason) {
     console.error('[usage] poll: ' + reason);
     // 성공한 지 오래된 모델별 수치는 내린다 (statusline 표시는 유지)
     if (this.models && Date.now() - this.modelsAt > MODEL_STALE_MS) {
       this.models = null;
       this.apply();
     }
-    this.schedule(Math.max(waitMs, POLL_MS));
+    this.schedule(this.nextDelay());
   }
 
   schedule(ms) {
