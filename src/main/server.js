@@ -15,6 +15,8 @@ function startServer(port, onEvent) {
         try {
           const evt = JSON.parse(body);
           if (!evt.type) evt.type = url.searchParams.get('type') || '';
+          // 어느 에이전트의 hook인지. 옛 hook 등록(인자 없음)은 claude로 본다
+          if (!evt.agent) evt.agent = url.searchParams.get('agent') || 'claude';
           if (req.headers['x-term-program']) evt.term_program = req.headers['x-term-program'];
           if (req.headers['x-bundle-id']) evt.bundle_id = req.headers['x-bundle-id'];
           onEvent(evt);

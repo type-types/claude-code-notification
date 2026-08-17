@@ -54,13 +54,33 @@
     border-radius: 10px 0 0 10px;
     cursor: pointer;
   }
-  /* 접혀 있어도 보이는 세션 사용량 % */
+  /* 접혀 있어도 보이는 사용량 %. Claude 세션 %와 Codex 첫 한도 %를 위아래로
+     쌓는다 (Codex 줄은 카드처럼 왼쪽이 둥근 알약 테두리로 구분) */
   #tPct {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
     font-size: 7.5px;
+    line-height: 1.2;
     color: rgba(0, 0, 0, 0.5);
   }
   #tPct:empty {
     display: none;
+  }
+  #tPct .codex {
+    padding: 0 3px;
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    border-radius: 6px 3px 3px 6px;
+  }
+  /* 두 에이전트의 게이지가 함께 있을 때만 붙는 구분 제목 */
+  .uHead {
+    font-size: 7.5px;
+    color: rgba(0, 0, 0, 0.4);
+    margin-top: 2px;
+  }
+  .uHead:first-child {
+    margin-top: 0;
   }
   #ctrl.usageWarn #tPct {
     color: #c03020;
@@ -186,6 +206,22 @@
   /* 알림 카드는 메시지가 보이도록 최대 폭으로 고정 */
   .card.alert {
     width: 248px;
+  }
+  /* Codex 세션 카드: 왼쪽이 둥근 알약(타원) 모양으로 Claude 카드(둥근
+     사각형)와 구분한다. 접혀 있을 때 보이는 22px 띠도 Codex는 둥근 끝,
+     Claude는 직선이라 접힌 채로도 어느 쪽인지 알 수 있다.
+     왼쪽 여백을 곡면만큼 더 줘서(불변식 1) 글자가 곡면에 걸리지 않게 한다.
+     오른쪽 모서리는 그대로라 화면 밖 묻힘 11px 규칙(불변식 2)이 유지된다 */
+  .card.codex {
+    border-radius: 22px 10px 10px 22px;
+    padding-left: 32px;
+  }
+  .card.codex.working::before {
+    border-radius: 21px 9px 9px 21px;
+  }
+  /* 스피너는 곡면 안쪽 중앙에 오도록 살짝 안으로 */
+  .card.codex .spin {
+    left: 8px;
   }
   .card.out {
     transform: translateX(0);
@@ -426,6 +462,10 @@
   let opacity = 1;
   // 로컬에서 막 바꾼 값이 전송 중이던 옛 상태에 덮이지 않도록 잠시 지키는 시각
   let opTouchedAt = 0;
+  // 메시지 max-height 전환 중에도 실제 카드 높이를 따라 아래 카드를 민다.
+  // Codex/Claude 모양과 무관하게 같은 배치 규칙을 쓰며, top 변경은 크기를
+  // 바꾸지 않으므로 observer-layout 피드백 루프가 생기지 않는다.
+  const cardResizeObserver = new ResizeObserver(() => layout());
 
   function topMin() {
     return ctrl.offsetTop + ctrl.offsetHeight + 10;
@@ -472,14 +512,25 @@
     const has = Array.isArray(list) && list.length > 0;
     usageEl.classList.toggle('on', has);
     let warn = false;
+    // Claude와 Codex 게이지가 함께 있으면 에이전트 제목으로 나눠 보여준다
+    const mixed = has && list.some((u) => u.agent === 'codex') && list.some((u) => u.agent !== 'codex');
+    let lastAgent = null;
     if (has) {
       for (const u of list) {
+        const agent = u.agent === 'codex' ? 'codex' : 'claude';
+        if (mixed && agent !== lastAgent) {
+          const head = document.createElement('div');
+          head.className = 'uHead';
+          head.textContent = agent === 'codex' ? 'Codex' : 'Claude';
+          usageEl.appendChild(head);
+          lastAgent = agent;
+        }
         const row = document.createElement('div');
         row.className = 'uRow' + (u.percent >= 95 ? ' crit' : u.percent >= 80 ? ' warn' : '');
         if (u.percent >= 80) warn = true;
         const reset = u.resetsAt ? new Date(u.resetsAt) : null;
         row.title =
-          u.label + ' ' + u.percent + '% 사용' +
+          (u.agent === 'codex' ? 'Codex ' : 'Claude ') + u.label + ' ' + u.percent + '% 사용' +
           (reset ? '\n재설정: ' + reset.toLocaleString() : '');
         row.innerHTML =
           '<div class="uLabel"></div><div class="uBar"><div class="uFill"></div></div>' +
@@ -491,9 +542,23 @@
       }
     }
     ctrl.classList.toggle('usageWarn', warn);
-    // 접힌 토글 아래에 상시 표시하는 세션 %
+    // 접힌 토글 아래에 상시 표시: Claude 세션 %와 Codex 첫 한도 %
+    tPct.innerHTML = '';
     const session = has ? list.find((u) => u.key === 'session') : null;
-    tPct.textContent = session ? session.percent + '%' : '';
+    const codex = has ? list.find((u) => u.agent === 'codex') : null;
+    if (session) {
+      const el = document.createElement('span');
+      el.textContent = session.percent + '%';
+      el.title = 'Claude 세션 ' + session.percent + '%';
+      tPct.appendChild(el);
+    }
+    if (codex) {
+      const el = document.createElement('span');
+      el.className = 'codex';
+      el.textContent = codex.percent + '%';
+      el.title = 'Codex ' + codex.label + ' ' + codex.percent + '%';
+      tPct.appendChild(el);
+    }
     layout();
   }
 
@@ -572,7 +637,7 @@
   function layout() {
     const items = [...cards.values()]
       .filter((c) => c.baseY != null && !(drag && drag.card === c))
-      .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.cwd < b.el.dataset.cwd ? -1 : 1));
+      .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.key < b.el.dataset.key ? -1 : 1));
     let cursor = topMin();
     for (const c of items) {
       const y = Math.max(c.baseY, cursor);
@@ -620,22 +685,24 @@
       cursor = o.baseY + o.el.offsetHeight + GAP;
     }
 
-    const changed = { [c.el.dataset.cwd]: c.baseY };
+    const changed = { [c.el.dataset.key]: c.baseY };
     c.movedAt = Date.now();
     for (const o of others) {
       if (o.baseY !== oldY.get(o)) {
         o.movedAt = Date.now();
-        changed[o.el.dataset.cwd] = o.baseY;
+        changed[o.el.dataset.key] = o.baseY;
       }
     }
     window.api.setY(changed);
     layout();
   }
 
-  function makeCard(cwd) {
+  // key: 세션 키 (claude는 cwd, codex는 'codex:' + cwd, 같은 폴더의 추가
+  // 세션은 '#<session_id>' 접미사). main과 주고받는 id다
+  function makeCard(key) {
     const el = document.createElement('div');
     el.className = 'card';
-    el.dataset.cwd = cwd;
+    el.dataset.key = key;
     el.innerHTML =
       '<div class="spin"></div>' +
       '<div class="name"></div><div class="msg"></div>' +
@@ -662,7 +729,7 @@
 
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      window.api.menu(cwd);
+      window.api.menu(key);
     });
 
     el.addEventListener('mousedown', (e) => {
@@ -679,7 +746,7 @@
     x.addEventListener('click', (e) => {
       e.stopPropagation();
       c.suppressHover = true;
-      window.api.dismiss(cwd);
+      window.api.dismiss(key);
     });
 
     return c;
@@ -721,7 +788,7 @@
     else if (down) {
       // 알림 카드를 클릭하면 알림이 해소되면서 카드가 바로 안으로 들어간다
       if (down.c.state && down.c.state.alert) down.c.suppressHover = true;
-      window.api.focus(down.c.el.dataset.cwd);
+      window.api.focus(down.c.el.dataset.key);
     }
     down = null;
   });
@@ -750,13 +817,15 @@
     const seen = new Set();
     const fresh = [];
     for (const s of list) {
-      seen.add(s.cwd);
-      let c = cards.get(s.cwd);
+      const key = s.key || s.cwd;
+      seen.add(key);
+      let c = cards.get(key);
       let isNew = false;
       if (!c) {
-        c = makeCard(s.cwd);
-        cards.set(s.cwd, c);
+        c = makeCard(key);
+        cards.set(key, c);
         document.body.appendChild(c.el);
+        cardResizeObserver.observe(c.el);
         isNew = true;
       }
       const hadAlert = !!(c.state && c.state.alert);
@@ -764,7 +833,10 @@
       // 막 드랍해서 저장이 도는 중인 카드는 옛 y가 덮지 않게 잠시 보호한다
       if (s.y != null && Date.now() - c.movedAt > 2000) c.baseY = s.y;
       c.name.textContent = s.name || '';
-      c.name.title = s.cwd + (s.origin ? '\n출처: ' + s.origin : '') + '\n클릭하면 해당 창이 열립니다';
+      c.name.title =
+        (s.agent === 'codex' ? 'Codex' : 'Claude Code') + '  ' + s.cwd +
+        (s.origin ? '\n출처: ' + s.origin : '') + '\n클릭하면 해당 창이 열립니다';
+      c.el.classList.toggle('codex', s.agent === 'codex');
       if (s.alert) {
         c.msg.textContent = s.message || '';
         c.msg.title = s.message || '';
@@ -798,14 +870,15 @@
       applyOpacity(c);
       if (c.baseY == null) fresh.push(c);
     }
-    for (const [cwd, c] of [...cards]) {
-      if (!seen.has(cwd)) {
+    for (const [key, c] of [...cards]) {
+      if (!seen.has(key)) {
         if (drag && drag.card === c) {
           drag = null;
           c.el.classList.remove('dragging');
         }
+        cardResizeObserver.unobserve(c.el);
         c.el.remove();
-        cards.delete(cwd);
+        cards.delete(key);
       }
     }
     // 위치가 없는 새 카드는 기존 카드들 아래 빈자리에 차례로 배치하고 저장한다
@@ -817,7 +890,7 @@
       const assigned = {};
       for (const c of fresh) {
         c.baseY = bottom;
-        assigned[c.el.dataset.cwd] = bottom;
+        assigned[c.el.dataset.key] = bottom;
         bottom += c.el.offsetHeight + GAP + 2;
       }
       window.api.setY(assigned);

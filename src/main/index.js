@@ -10,6 +10,7 @@ const Border = require('./border');
 const { Scanner, findSessionProcs } = require('./scanner');
 const permission = require('./permission');
 const Usage = require('./usage');
+const { frontSessionKeys } = require('./front');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -80,8 +81,6 @@ app.on('window-all-closed', () => {
 //    쓰면 Finder 등 무관한 창에 걸린다.
 // 3) 맨 앞 앱이 터미널 계열일 때만 인정한다. 프로젝트 이름이 들어간
 //    브라우저 탭 제목 등에 걸리는 것을 막는다.
-const WATCH_APPS = new Set(['Code', 'Code - Insiders', 'Claude', 'iTerm2', 'Terminal']);
-
 function startFrontWatch(sessions) {
   setInterval(() => pollFront(sessions), 1500);
 }
@@ -89,18 +88,16 @@ function startFrontWatch(sessions) {
 function pollFront(sessions) {
   if (!systemPreferences.isTrustedAccessibilityClient(false)) return;
   permission.frontWindow((front) => {
-    const appOk = !!(front && WATCH_APPS.has(front.app));
-    const fronts = [];
+    const fronts = frontSessionKeys(front, [...sessions.map.values()]);
+    const frontSet = new Set(fronts);
     for (const s of sessions.map.values()) {
-      const isFront =
-        appOk && !!front.title && front.title.includes(path.basename(s.cwd));
-      if (isFront) fronts.push(s.cwd);
+      const isFront = frontSet.has(s.key);
       const a = s.alert;
       if (!a || a.kind !== 'done') continue;
       if (a.wasFront === undefined) {
         a.wasFront = isFront;
       } else if (!a.wasFront && isFront) {
-        console.log('[frontwatch] window focused, resolving ' + s.cwd);
+        console.log('[frontwatch] window focused, resolving ' + s.key);
         sessions.resolveAlert(s);
       } else {
         a.wasFront = isFront;
@@ -120,16 +117,23 @@ function titleCandidates(cwd) {
   return candidates.length ? candidates : [path.basename(cwd)];
 }
 
-// claude 프로세스에 SIGTERM을 보내고, 잠시 후 부모 셸도 종료해
-// VSC 터미널 탭까지 닫는다. 위젯은 즉시 제거한다 (스캔, hook 정리와 별개).
+// 세션 프로세스(claude 또는 codex)에 SIGTERM을 보내고, 잠시 후 부모 셸도
+// 종료해 VSC 터미널 탭까지 닫는다. 위젯은 즉시 제거한다 (스캔, hook 정리와 별개).
 function killSession(sessions, s) {
-  findSessionProcs(s.cwd, (procs) => {
-    if (!sessions.map.has(s.cwd)) return;
+  const sameCwd = [...sessions.map.values()].filter(
+    (candidate) => candidate.agent === s.agent && candidate.cwd === s.cwd
+  );
+  if (sameCwd.length > 1) {
+    sessions.setError(s, '같은 폴더 세션이 여러 개라 종료할 수 없음');
+    return;
+  }
+  findSessionProcs(s.agent, s.cwd, (procs) => {
+    if (!sessions.map.has(s.key)) return;
     if (procs.length === 0) {
       sessions.setError(s, '실행 중인 프로세스가 없음');
       return;
     }
-    console.log('[kill] ' + s.cwd + ' pids ' + procs.map((p) => p.pid + '/' + p.ppid).join(' '));
+    console.log('[kill] ' + s.key + ' pids ' + procs.map((p) => p.pid + '/' + p.ppid).join(' '));
     for (const p of procs) {
       try {
         process.kill(p.pid, 'SIGTERM');
@@ -146,7 +150,7 @@ function killSession(sessions, s) {
           console.error('[kill] ppid ' + p.ppid + ': ' + err.message);
         }
       }
-      if (sessions.map.has(s.cwd)) sessions.remove(s.cwd);
+      if (sessions.map.has(s.key)) sessions.remove(s.key);
     }, 800);
   });
 }
@@ -169,8 +173,8 @@ function focusSession(sessions, s) {
     return;
   }
   permission.focus(titleCandidates(s.cwd), (result) => {
-    console.log('[focus] ' + s.cwd + ' -> ' + result);
-    if (result !== 'OK' && sessions.map.has(s.cwd)) {
+    console.log('[focus] ' + s.key + ' -> ' + result);
+    if (result !== 'OK' && sessions.map.has(s.key)) {
       if (o.termProgram === 'vscode') {
         // 제목 매칭 실패 시 VSC 앱이라도 앞으로 가져온다
         permission.activateApp(o.bundleId || 'com.microsoft.VSCode');
@@ -181,9 +185,10 @@ function focusSession(sessions, s) {
   });
 }
 
+// renderer는 세션 키(에이전트/cwd와 필요 시 session_id 접미사)로 카드를 가리킨다
 function setupIpc(sessions, dock) {
-  ipcMain.on('focus', (e, cwd) => {
-    const s = sessions.map.get(cwd);
+  ipcMain.on('focus', (e, key) => {
+    const s = sessions.map.get(key);
     if (!s) return;
     // 카드를 클릭했다는 것은 알림을 확인했다는 뜻이므로 함께 해소한다.
     // x 버튼은 이 동작으로 대체되어 제거했다.
@@ -192,8 +197,8 @@ function setupIpc(sessions, dock) {
   });
 
   // x 버튼: 창 전환 없이 알림만 해소한다 (다른 화면을 보던 중 일단 닫기)
-  ipcMain.on('dismiss', (e, cwd) => {
-    const s = sessions.map.get(cwd);
+  ipcMain.on('dismiss', (e, key) => {
+    const s = sessions.map.get(key);
     if (!s) return;
     sessions.resolveAlert(s);
   });
@@ -210,13 +215,13 @@ function setupIpc(sessions, dock) {
     dock.setMouseCapture(!!on);
   });
 
-  ipcMain.on('widget-menu', (e, cwd) => {
-    const s = sessions.map.get(cwd);
+  ipcMain.on('widget-menu', (e, key) => {
+    const s = sessions.map.get(key);
     if (!s) return;
     Menu.buildFromTemplate([
-      { label: s.cwd, enabled: false },
+      { label: (s.agent === 'codex' ? 'Codex  ' : 'Claude  ') + s.cwd, enabled: false },
       { type: 'separator' },
-      { label: '카드 닫기', click: () => sessions.remove(s.cwd) },
+      { label: '카드 닫기', click: () => sessions.remove(s.key) },
       { label: '세션 종료 (터미널 닫기)', click: () => killSession(sessions, s) },
     ]).popup({ window: dock.win });
   });
@@ -225,7 +230,7 @@ function setupIpc(sessions, dock) {
 function setupTray(cfg, border, sessions) {
   tray = new Tray(nativeImage.createEmpty());
   tray.setTitle('🔔');
-  tray.setToolTip('Claude Code 알림 오버레이');
+  tray.setToolTip('Claude Code / Codex 알림 오버레이');
   tray.setContextMenu(
     Menu.buildFromTemplate([
       {
