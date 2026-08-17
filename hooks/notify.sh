@@ -1,14 +1,19 @@
 #!/bin/bash
-# Claude Code hook: stdin JSON을 오버레이 앱의 로컬 서버로 그대로 전달한다.
-# 이벤트 타입은 쿼리 파라미터로 붙이고, 파싱은 앱이 담당한다.
-# 앱이 꺼져 있어도 조용히 실패하며 Claude Code 진행을 막지 않는다.
+# Claude Code / Codex hook: stdin JSON을 오버레이 앱의 로컬 서버로 그대로 전달한다.
+# 이벤트 타입과 에이전트 종류는 쿼리 파라미터로 붙이고, 파싱은 앱이 담당한다.
+# 두 에이전트의 hook 페이로드는 필드 이름이 같아서(session_id, cwd, tool_name,
+# tool_input 등) 스크립트 하나로 둘 다 처리한다.
+# 앱이 꺼져 있어도 조용히 실패하며 에이전트 진행을 막지 않는다.
+#
+# 사용: notify.sh <event_type> [claude|codex]   (두 번째 인자 생략 시 claude)
 
 TYPE="${1:-unknown}"
+AGENT="${2:-claude}"
 PORT="${CC_NOTIFY_PORT:-48923}"
 
 # hook은 세션 프로세스의 환경을 물려받으므로, 어느 앱의 터미널에서 나온
 # 세션인지(VS Code, iTerm, Claude 앱 등) 헤더로 함께 전달한다.
-curl -s -m 1 -X POST "http://127.0.0.1:${PORT}/event?type=${TYPE}" \
+curl -s -m 1 -X POST "http://127.0.0.1:${PORT}/event?type=${TYPE}&agent=${AGENT}" \
   -H 'Content-Type: application/json' \
   -H "X-Term-Program: ${TERM_PROGRAM:-}" \
   -H "X-Bundle-Id: ${__CFBundleIdentifier:-}" \

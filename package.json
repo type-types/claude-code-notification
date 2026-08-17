@@ -6,6 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "node --test test/*.test.js && electron test/electron-renderer.js",
     "build": "electron-builder --mac dir"
   },
   "devDependencies": {

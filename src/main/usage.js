@@ -1,5 +1,8 @@
 const { execFile } = require('child_process');
 const https = require('https');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const EventEmitter = require('events');
 
 const THRESHOLDS = [80, 95];
@@ -21,7 +24,18 @@ const MAX_PER_HOUR = 3;
 // 폴링이 계속 실패하면 오래된 모델별 수치는 오해를 부르므로 내린다.
 const MODEL_STALE_MS = 45 * 60 * 1000;
 
-// 플랜 사용량. 두 경로를 합친다:
+// Codex 플랜 사용량: Codex CLI가 세션 기록(rollout-*.jsonl)에 턴마다 쓰는
+// token_count 이벤트의 rate_limits를 읽는다 (2026-08-15 실측: primary와
+// secondary 각각 used_percent, window_minutes, resets_at). API 호출이 없는
+// 수동 경로라 Claude의 statusline 경로와 성격이 같다. 파일은 세션 시작
+// 날짜 폴더(YYYY/MM/DD)에 놓이고 어제 시작한 세션이 오늘도 그 파일에
+// 이어 쓰므로, 최근 며칠 폴더를 훑어 가장 최근에 수정된 파일을 고른다.
+const CODEX_SESSIONS = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions');
+const CODEX_POLL_MS = 30 * 1000;
+const CODEX_TAIL_BYTES = 256 * 1024;
+const CODEX_DAY_DIRS = 3;
+
+// 플랜 사용량. 세 경로를 합친다:
 // 1) 세션(5시간)과 주간(전체) %: Claude Code의 공식 statusline 기능.
 //    hooks/statusline.sh가 stdin JSON의 rate_limits를 로컬 서버로 중계해
 //    ingest()로 들어온다. 세션이 활동하는 동안 실시간 갱신, 폴링 불필요.
@@ -29,6 +43,8 @@ const MODEL_STALE_MS = 45 * 60 * 1000;
 //    API(/api/oauth/usage)를 키체인 토큰으로 15~25분 무작위 간격
 //    (시간당 최대 3회)으로 조회한다.
 //    비공식 경로라 실패할 수 있고, 실패해도 1)의 표시에는 영향이 없다.
+// 3) Codex 세션과 주간 %: Codex CLI 세션 기록 파일의 rate_limits를 읽는다
+//    (위 CODEX_* 상수 설명 참고). agent: 'codex'를 붙여 renderer가 구분한다.
 class Usage extends EventEmitter {
   constructor(cfg) {
     super();
@@ -37,6 +53,12 @@ class Usage extends EventEmitter {
     this.limits = null;
     this.base = null; // statusline 출처 (세션, 주간)
     this.models = null; // 폴링 출처 (모델별)
+    this.codex = null; // Codex 세션 기록 출처
+    this.codexFile = ''; // 마지막으로 읽은 rollout 파일과 수정 시각
+    this.codexMtime = 0;
+    this.codexTimer = null;
+    this.codexWatcher = null;
+    this.codexWatchTimer = null;
     this.modelsAt = 0; // 마지막 폴링 성공 시각
     this.lastPercent = {};
     this.timer = null;
@@ -58,6 +80,151 @@ class Usage extends EventEmitter {
     } else {
       this.poll();
     }
+    this.startCodex();
+  }
+
+  // Codex 세션 기록 감시. 폴더 변경 이벤트로 즉시 반응하고(디바운스 1초),
+  // 이벤트를 놓쳐도 30초 폴링으로 따라잡는다. 앱 시작 뒤 폴더가 생기는 경우도
+  // 폴링 때 watcher를 붙여서 재시작 없이 사용량 표시를 시작한다.
+  startCodex() {
+    if (this.codexTimer) return;
+    this.codexPoll();
+    this.codexTimer = setInterval(() => this.codexPoll(), CODEX_POLL_MS);
+  }
+
+  ensureCodexWatcher() {
+    if (this.codexWatcher || !fs.existsSync(CODEX_SESSIONS)) return;
+    try {
+      const watcher = fs.watch(CODEX_SESSIONS, { recursive: true }, () => {
+        clearTimeout(this.codexWatchTimer);
+        this.codexWatchTimer = setTimeout(() => this.codexPoll(), 1000);
+      });
+      watcher.on('error', (e) => {
+        console.error('[usage] codex watch: ' + e.message);
+        if (this.codexWatcher === watcher) this.codexWatcher = null;
+        try {
+          watcher.close();
+        } catch (closeErr) {
+          // 이미 닫힌 watcher
+        }
+      });
+      this.codexWatcher = watcher;
+    } catch (e) {
+      console.error('[usage] codex watch: ' + e.message);
+    }
+  }
+
+  // 최근 날짜 폴더 몇 개에서 가장 최근에 수정된 rollout 파일을 고른다.
+  codexLatestFile() {
+    const dayDirs = [];
+    const list = (dir) => {
+      try {
+        return fs.readdirSync(dir).filter((n) => /^\d+$/.test(n)).sort().reverse();
+      } catch (e) {
+        return [];
+      }
+    };
+    for (const y of list(CODEX_SESSIONS)) {
+      for (const m of list(path.join(CODEX_SESSIONS, y))) {
+        for (const d of list(path.join(CODEX_SESSIONS, y, m))) {
+          dayDirs.push(path.join(CODEX_SESSIONS, y, m, d));
+          if (dayDirs.length >= CODEX_DAY_DIRS) break;
+        }
+        if (dayDirs.length >= CODEX_DAY_DIRS) break;
+      }
+      if (dayDirs.length >= CODEX_DAY_DIRS) break;
+    }
+    let best = null;
+    for (const dir of dayDirs) {
+      let names = [];
+      try {
+        names = fs.readdirSync(dir).filter((n) => n.startsWith('rollout-') && n.endsWith('.jsonl'));
+      } catch (e) {
+        continue;
+      }
+      for (const n of names) {
+        const file = path.join(dir, n);
+        let st;
+        try {
+          st = fs.statSync(file);
+        } catch (e) {
+          continue;
+        }
+        if (!best || st.mtimeMs > best.mtime) best = { file, mtime: st.mtimeMs, size: st.size };
+      }
+    }
+    return best;
+  }
+
+  codexPoll() {
+    this.ensureCodexWatcher();
+    const latest = this.codexLatestFile();
+    if (!latest) return;
+    if (latest.file === this.codexFile && latest.mtime === this.codexMtime) return;
+    this.codexFile = latest.file;
+    this.codexMtime = latest.mtime;
+    // 파일 꼬리만 읽어 마지막 rate_limits를 찾는다
+    let fd;
+    try {
+      fd = fs.openSync(latest.file, 'r');
+      const len = Math.min(CODEX_TAIL_BYTES, latest.size);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, latest.size - len);
+      const lines = buf.toString('utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].includes('"rate_limits"')) continue;
+        let obj;
+        try {
+          obj = JSON.parse(lines[i]);
+        } catch (e) {
+          continue; // 잘린 첫 줄이나 쓰는 중인 마지막 줄
+        }
+        const rl = obj && obj.payload && obj.payload.rate_limits;
+        if (rl) {
+          this.codexApply(rl);
+          break;
+        }
+      }
+    } catch (e) {
+      console.error('[usage] codex read: ' + e.message);
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+  }
+
+  // primary/secondary를 창 길이로 이름 붙인다. 5시간(300분)은 세션, 7일(10080분)은
+  // 주간으로 Claude 쪽 표기와 맞춘다. 사용자 플랜에 따라 둘 중 하나만 올 수 있다.
+  codexApply(rl) {
+    const list = [];
+    for (const field of ['primary', 'secondary']) {
+      const l = rl[field];
+      if (!l || l.used_percent == null) continue;
+      const min = Number(l.window_minutes) || 0;
+      const resetsAt = toIso(l.resets_at);
+      const expired = !!resetsAt && Date.parse(resetsAt) <= Date.now();
+      let label;
+      let key;
+      if (min > 0 && min <= 300) {
+        label = '세션';
+      } else if (min === 10080) {
+        label = '주간';
+      } else {
+        label = min >= 1440 ? Math.round(min / 1440) + '일' : Math.round(min / 60) + '시간';
+      }
+      // primary/secondary는 시간창이 같거나 누락될 수 있다. 표시 이름과
+      // 무관한 슬롯 ID로 진행 이력을 분리해야 서로의 %가 이전 값이 되지 않는다.
+      key = 'codex:' + field;
+      list.push({
+        key,
+        agent: 'codex',
+        label,
+        windowMinutes: min,
+        percent: expired ? 0 : Math.round(l.used_percent),
+        resetsAt: expired ? '' : resetsAt,
+      });
+    }
+    this.codex = list.length ? list : null;
+    this.apply();
   }
 
   // statusline 이벤트(공식). rate_limits가 없는 이벤트(세션 첫 응답 전 등)는
@@ -199,7 +366,7 @@ class Usage extends EventEmitter {
   }
 
   apply() {
-    const limits = [...(this.base || []), ...(this.models || [])];
+    const limits = [...(this.base || []), ...(this.models || []), ...(this.codex || [])];
     if (!limits.length) return;
     // 임계선(80, 95%)을 상향 돌파하면 소리와 번쩍임으로 한 번 알린다.
     // 한도가 임박한 것을 미리 알아야 작업 계획을 세울 수 있기 때문이다.
@@ -208,7 +375,8 @@ class Usage extends EventEmitter {
     let crossed = false;
     let stepped = false;
     for (const l of limits) {
-      const step = l.key === 'session' ? STEP_SESSION : STEP_WEEKLY;
+      const codexSession = l.agent === 'codex' && l.windowMinutes > 0 && l.windowMinutes <= 300;
+      const step = l.key === 'session' || codexSession ? STEP_SESSION : STEP_WEEKLY;
       const prev = this.lastPercent[l.key];
       if (prev != null) {
         for (const t of THRESHOLDS) {
@@ -232,7 +400,7 @@ class Usage extends EventEmitter {
   expire() {
     if (!this.limits) return;
     let changed = false;
-    for (const list of [this.base, this.models]) {
+    for (const list of [this.base, this.models, this.codex]) {
       for (const l of list || []) {
         if (l.percent > 0 && l.resetsAt && Date.parse(l.resetsAt) <= Date.now()) {
           l.percent = 0;
