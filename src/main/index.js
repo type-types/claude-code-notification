@@ -11,6 +11,7 @@ const { Scanner, findSessionProcs } = require('./scanner');
 const permission = require('./permission');
 const Usage = require('./usage');
 const { frontSessionKeys } = require('./front');
+const diag = require('./diag');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -20,6 +21,7 @@ let tray = null;
 
 app.whenReady().then(() => {
   if (app.dock) app.dock.hide();
+  diag.init();
 
   const cfg = new Config();
   const sound = new Sound(cfg);
@@ -50,10 +52,29 @@ app.whenReady().then(() => {
   });
   usage.start();
 
-  startServer(cfg.get('port'), (evt) => {
-    if (evt.type === 'statusline') usage.ingest(evt);
-    else sessions.handleEvent(evt);
-  });
+  startServer(
+    cfg.get('port'),
+    (evt) => {
+      if (evt.type === 'statusline') usage.ingest(evt);
+      else sessions.handleEvent(evt);
+    },
+    () => ({
+      sessions: [...sessions.map.values()].map((s) => ({
+        key: s.key,
+        agent: s.agent,
+        cwd: s.cwd,
+        sessionId: s.sessionId,
+        idleMin: Math.round((Date.now() - s.lastEvent) / 60000),
+        scanSeen: !!s.scanSeen,
+        scanMiss: s.scanMiss || 0,
+        alert: s.alert ? s.alert.kind : '',
+        origin: s.origin,
+      })),
+      usage: usage.limits,
+      usageAt: usage.at,
+      diagLog: diag.path(),
+    })
+  );
   new Scanner(sessions).start();
   startFrontWatch(sessions);
   setupIpc(sessions, dock);
@@ -213,6 +234,11 @@ function setupIpc(sessions, dock) {
 
   ipcMain.on('mouse-capture', (e, on) => {
     dock.setMouseCapture(!!on);
+  });
+
+  // renderer 진단 로그 (접기 버그 등 재현이 드문 문제의 단서)
+  ipcMain.on('diag', (e, tag, event, data) => {
+    diag.log(String(tag || 'renderer'), String(event || ''), data);
   });
 
   ipcMain.on('widget-menu', (e, key) => {

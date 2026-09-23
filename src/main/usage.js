@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const EventEmitter = require('events');
+const diag = require('./diag');
 
 const THRESHOLDS = [80, 95];
 // 진행 알림 계단: 세션은 5%, 주간 한도(전체, 모델별)는 10% 단위로
@@ -21,8 +22,10 @@ const POLL_MIN_MS = 15 * 60 * 1000;
 const POLL_JITTER_MS = 10 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const MAX_PER_HOUR = 3;
-// 폴링이 계속 실패하면 오래된 모델별 수치는 오해를 부르므로 내린다.
-const MODEL_STALE_MS = 45 * 60 * 1000;
+// 조회가 실패해도 마지막 값을 내리지 않는다 (사용자 요청 2026-09-23: 못 불러오면
+// 마지막에 저장한 정보라도 계속 보이게). 대신 각 항목에 받은 시각(asOf)을 실어
+// renderer가 오래된 값임을 표시하고, 값은 config(usageCache)에 저장해 재시작
+// 직후에도 바로 보인다.
 
 // Codex 플랜 사용량: Codex CLI가 세션 기록(rollout-*.jsonl)에 턴마다 쓰는
 // token_count 이벤트의 rate_limits를 읽는다 (2026-08-15 실측: primary와
@@ -54,19 +57,45 @@ class Usage extends EventEmitter {
     this.base = null; // statusline 출처 (세션, 주간)
     this.models = null; // 폴링 출처 (모델별)
     this.codex = null; // Codex 세션 기록 출처
+    this.at = { base: 0, models: 0, codex: 0 }; // 출처별 마지막 수신 시각
     this.codexFile = ''; // 마지막으로 읽은 rollout 파일과 수정 시각
     this.codexMtime = 0;
     this.codexTimer = null;
     this.codexWatcher = null;
     this.codexWatchTimer = null;
-    this.modelsAt = 0; // 마지막 폴링 성공 시각
     this.lastPercent = {};
     this.timer = null;
     this.pollTimer = null;
     this.pollTimes = []; // 최근 조회 시각들 (시간당 횟수 제한용)
+    this.loadCache();
+  }
+
+  // 지난 실행에서 저장한 마지막 사용량. 세션이 하나도 없거나 조회가 실패해도
+  // 마지막 값을 보여주기 위한 것이고, 실제 데이터가 오면 자연히 덮인다.
+  loadCache() {
+    const c = this.cfg.get('usageCache');
+    if (!c || typeof c !== 'object') return;
+    for (const src of ['base', 'models', 'codex']) {
+      if (Array.isArray(c[src]) && c[src].length) {
+        this[src] = c[src];
+        this.at[src] = (c.at && Number(c.at[src])) || 0;
+        for (const l of c[src]) if (l && l.key) this.lastPercent[l.key] = l.percent;
+      }
+    }
+  }
+
+  saveCache() {
+    this.cfg.set('usageCache', {
+      base: this.base,
+      models: this.models,
+      codex: this.codex,
+      at: this.at,
+    });
   }
 
   start() {
+    // 저장된 마지막 값이 있으면 바로 표시한다
+    if (this.base || this.models || this.codex) this.apply();
     // 세션이 모두 꺼져 있으면 새 데이터가 안 오므로, 재설정 시각이 지난
     // 게이지는 1분마다 확인해 0으로 내린다.
     this.timer = setInterval(() => this.expire(), 60 * 1000);
@@ -74,9 +103,14 @@ class Usage extends EventEmitter {
     // 차단 중에는 어떤 요청이든 페널티 타이머를 리셋시키므로, 재시작
     // 직후의 첫 조회가 회복을 늦추는 것을 막는다.
     const until = this.cfg.get('usagePollBlockedUntil') || 0;
+    // 마지막 조회 시각도 저장해 둔다. 앱을 짧은 간격으로 여러 번 재시작해도
+    // (빌드 후 재실행 등) 시작 직후 조회가 시간당 상한을 뚫지 않게 한다.
+    const sinceLast = Date.now() - (this.cfg.get('usageLastPoll') || 0);
     if (Date.now() < until) {
       console.log('[usage] poll blocked until ' + new Date(until).toLocaleString());
       this.schedule(until - Date.now());
+    } else if (sinceLast < POLL_MIN_MS) {
+      this.schedule(POLL_MIN_MS - sinceLast);
     } else {
       this.poll();
     }
@@ -171,6 +205,7 @@ class Usage extends EventEmitter {
       const buf = Buffer.alloc(len);
       fs.readSync(fd, buf, 0, len, latest.size - len);
       const lines = buf.toString('utf8').split('\n');
+      let skipped = 0;
       for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].includes('"rate_limits"')) continue;
         let obj;
@@ -180,10 +215,18 @@ class Usage extends EventEmitter {
           continue; // 잘린 첫 줄이나 쓰는 중인 마지막 줄
         }
         const rl = obj && obj.payload && obj.payload.rate_limits;
-        if (rl) {
-          this.codexApply(rl);
-          break;
+        if (!rl) continue;
+        // codex-cli 0.155 실측(2026-09-23): 한 세션 안에 limit_id가 다른 버킷
+        // (codex, premium)의 이벤트가 섞여 오고, premium 줄은 primary와
+        // secondary가 모두 null이다. 마지막 줄만 읽으면 게이지가 통째로
+        // 사라지므로, 창 정보가 있는 가장 최근 줄까지 거슬러 올라간다.
+        if (!hasWindow(rl.primary) && !hasWindow(rl.secondary)) {
+          skipped++;
+          continue;
         }
+        if (skipped) diag.log('usage', 'codex: skipped empty rate_limits', { skipped, limitId: rl.limit_id });
+        this.codexApply(rl);
+        break;
       }
     } catch (e) {
       console.error('[usage] codex read: ' + e.message);
@@ -196,9 +239,11 @@ class Usage extends EventEmitter {
   // 주간으로 Claude 쪽 표기와 맞춘다. 사용자 플랜에 따라 둘 중 하나만 올 수 있다.
   codexApply(rl) {
     const list = [];
+    // 플랜 이름(plus, prolite 등)과 한도 도달 표시는 툴팁 정보로 함께 싣는다
+    const plan = typeof rl.plan_type === 'string' ? rl.plan_type : '';
     for (const field of ['primary', 'secondary']) {
       const l = rl[field];
-      if (!l || l.used_percent == null) continue;
+      if (!hasWindow(l)) continue;
       const min = Number(l.window_minutes) || 0;
       const resetsAt = toIso(l.resets_at);
       const expired = !!resetsAt && Date.parse(resetsAt) <= Date.now();
@@ -218,12 +263,16 @@ class Usage extends EventEmitter {
         key,
         agent: 'codex',
         label,
+        plan,
         windowMinutes: min,
         percent: expired ? 0 : Math.round(l.used_percent),
         resetsAt: expired ? '' : resetsAt,
       });
     }
-    this.codex = list.length ? list : null;
+    if (list.length) {
+      this.codex = list;
+      this.at.codex = Date.now();
+    }
     this.apply();
   }
 
@@ -249,6 +298,7 @@ class Usage extends EventEmitter {
     }
     if (!base.length) return;
     this.base = base;
+    this.at.base = Date.now();
     this.apply();
   }
 
@@ -285,6 +335,7 @@ class Usage extends EventEmitter {
 
   poll() {
     this.pollTimes.push(Date.now());
+    this.cfg.set('usageLastPoll', Date.now());
     this.token((token) => {
       if (!token) return this.pollFail('no token');
       const req = https.request(
@@ -329,22 +380,52 @@ class Usage extends EventEmitter {
     });
   }
 
-  // 응답에서 모델별 한도만 뽑는다. 세션과 주간 전체는 statusline이
-  // 담당하므로 중복 표시하지 않는다.
+  // 응답에서 모델별 한도를 뽑고, 세션(5시간)과 주간 전체 값도 statusline이
+  // 최근에 안 왔을 때의 대체로 쓴다. VS Code 확장의 Claude 세션은 statusline을
+  // 실행하지 않아 세션 값이 비던 문제의 보완 경로다 (2026-09-23). 응답 형식이
+  // 비공식이라 창 판별은 여러 형태를 허용하고, 처음 보는 형태는 진단 로그에
+  // 남긴다.
   pollApply(data) {
     const models = [];
+    const base = [];
+    const shapes = [];
     for (const l of data.limits || []) {
       const name = l.scope && l.scope.model && l.scope.model.display_name;
-      if (!name) continue;
-      models.push({
-        key: 'model:' + name,
-        label: name,
-        percent: Math.round(l.percent || 0),
-        resetsAt: toIso(l.resets_at),
-      });
+      if (name) {
+        models.push({
+          key: 'model:' + name,
+          label: name,
+          percent: Math.round(l.percent || 0),
+          resetsAt: toIso(l.resets_at),
+        });
+        continue;
+      }
+      const win = windowOf(l);
+      shapes.push({ keys: Object.keys(l), scope: l.scope, win });
+      if (win === 'five_hour') base.push({ key: 'session', label: '세션', percent: pctOf(l), resetsAt: toIso(l.resets_at) });
+      else if (win === 'seven_day') base.push({ key: 'weekly_all', label: '주간', percent: pctOf(l), resetsAt: toIso(l.resets_at) });
     }
-    this.models = models.length ? models : null;
-    this.modelsAt = Date.now();
+    // 옛 형식: 최상위 five_hour, seven_day 객체(utilization, resets_at)
+    for (const [field, key, label] of [['five_hour', 'session', '세션'], ['seven_day', 'weekly_all', '주간']]) {
+      const l = data[field];
+      if (l && typeof l === 'object' && !base.some((b) => b.key === key)) {
+        base.push({ key, label, percent: pctOf(l), resetsAt: toIso(l.resets_at) });
+      }
+    }
+    const shapeKey = JSON.stringify(shapes);
+    if (shapeKey !== this.lastShape) {
+      this.lastShape = shapeKey;
+      diag.log('usage', 'poll non-model entries', { shapes, base: base.map((b) => b.key) });
+    }
+    if (models.length) {
+      this.models = models;
+      this.at.models = Date.now();
+    }
+    // statusline이 최근 폴링 주기 안에 왔으면 그쪽(공식, 턴마다 갱신)을 유지한다
+    if (base.length && Date.now() - this.at.base > POLL_MIN_MS) {
+      this.base = base;
+      this.at.base = Date.now();
+    }
     if (this.cfg.get('usagePollBlockedUntil')) this.cfg.set('usagePollBlockedUntil', 0);
     this.apply();
     this.schedule(this.nextDelay());
@@ -352,11 +433,8 @@ class Usage extends EventEmitter {
 
   pollFail(reason) {
     console.error('[usage] poll: ' + reason);
-    // 성공한 지 오래된 모델별 수치는 내린다 (statusline 표시는 유지)
-    if (this.models && Date.now() - this.modelsAt > MODEL_STALE_MS) {
-      this.models = null;
-      this.apply();
-    }
+    diag.log('usage', 'model poll failed', { reason, lastOk: this.at.models });
+    // 마지막 모델별 수치는 그대로 둔다. renderer가 asOf로 오래된 값임을 보인다
     this.schedule(this.nextDelay());
   }
 
@@ -366,7 +444,8 @@ class Usage extends EventEmitter {
   }
 
   apply() {
-    const limits = [...(this.base || []), ...(this.models || []), ...(this.codex || [])];
+    const stamp = (list, src) => (list || []).map((l) => Object.assign({}, l, { asOf: this.at[src] }));
+    const limits = [...stamp(this.base, 'base'), ...stamp(this.models, 'models'), ...stamp(this.codex, 'codex')];
     if (!limits.length) return;
     // 임계선(80, 95%)을 상향 돌파하면 소리와 번쩍임으로 한 번 알린다.
     // 한도가 임박한 것을 미리 알아야 작업 계획을 세울 수 있기 때문이다.
@@ -391,6 +470,7 @@ class Usage extends EventEmitter {
     this.limits = limits;
     if (changed) {
       console.log('[usage] ' + limits.map((l) => l.label + ' ' + l.percent + '%').join(', '));
+      this.saveCache();
       this.emit('update');
     }
     if (crossed) this.emit('threshold');
@@ -412,6 +492,34 @@ class Usage extends EventEmitter {
     }
     if (changed) this.apply();
   }
+}
+
+// 비공식 usage API 항목의 시간 창 판별: 문자열 필드에 five_hour / seven_day
+// 류의 이름이 있거나, 창 길이가 초(18000, 604800), 분(300, 10080), 시간(5, 168)
+// 단위로 들어 있는 경우를 모두 본다.
+function windowOf(l) {
+  // 2026-09-23 실측: 항목에 kind, group, percent, severity, resets_at, scope(null),
+  // is_active가 있고, 응답 최상위에도 five_hour, seven_day 객체가 함께 온다
+  const text = JSON.stringify([l.scope, l.kind, l.group, l.window, l.name, l.id, l.type, l.period, l.key]).toLowerCase();
+  if (/five_hour|5h|five-hour|session/.test(text)) return 'five_hour';
+  if (/seven_day|7d|seven-day|week/.test(text)) return 'seven_day';
+  for (const f of ['window_seconds', 'window_minutes', 'window_hours', 'window', 'duration', 'period_seconds']) {
+    const v = Number(l[f] != null ? l[f] : l.scope && l.scope[f]);
+    if (!v) continue;
+    if (v === 18000 || v === 300 || v === 5) return 'five_hour';
+    if (v === 604800 || v === 10080 || v === 168) return 'seven_day';
+  }
+  return '';
+}
+
+function pctOf(l) {
+  const v = l.percent != null ? l.percent : l.utilization != null ? l.utilization : l.used_percentage;
+  return Math.round(Number(v) || 0);
+}
+
+// Codex rate_limits의 창 항목에 실제 값이 있는지
+function hasWindow(l) {
+  return !!l && typeof l === 'object' && l.used_percent != null;
 }
 
 // 429 백오프 마감: 다음날 0시 (로컬 시간)

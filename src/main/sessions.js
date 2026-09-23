@@ -9,6 +9,7 @@ const REMIND_DUE_MS = REMIND_TICK_MS - 5000;
 const REMIND_MAX = 5;
 
 const AGENTS = new Set(['claude', 'codex']);
+const diag = require('./diag');
 
 // 세션 키: 에이전트 + 워킹 디렉토리. 같은 폴더에서 Claude와 Codex를 함께
 // 돌리면 카드가 2장이어야 하므로 cwd만으로는 부족하다. claude는 예전 그대로
@@ -159,20 +160,31 @@ class Sessions extends EventEmitter {
       s.turnStart = Date.now();
       this.resolveAlert(s);
     } else if (type === 'notification') {
-      // Claude Code 전용 이벤트 (Codex에는 없다)
+      // Claude Code 전용 이벤트 (Codex에는 없다). 페이로드의 notification_type
+      // (permission_prompt, idle_prompt, elicitation_dialog, agent_needs_input,
+      // auth_success 등, 공식 문서 2026-09)으로 종류를 가르고, 이 필드가 없는
+      // 옛 버전은 메시지 문구로 판정한다.
       const s = this.ensure(agent, cwd, evt.session_id);
       const msg = evt.message || '';
-      if (/waiting for your input/i.test(msg)) {
+      const nt = typeof evt.notification_type === 'string' ? evt.notification_type : '';
+      const idle = nt ? nt === 'idle_prompt' : /waiting for your input/i.test(msg);
+      const question = /^(elicitation_dialog|elicitation_url_dialog|agent_needs_input)$/.test(nt);
+      const permission = nt ? nt === 'permission_prompt' : !idle;
+      if (idle || question) {
         // 유휴 알림: 턴이 끝난 뒤(요청받은 것이 없는 상태)면 무시하고,
         // 진행 중 입력 대기(질문 등)일 때만 허용 버튼 없는 알림으로 표시한다
-        if (!s.stopped && !s.alert) this.setAlert(s, '입력 대기 중', '', 'input', '');
-      } else if (!s.stopped && !(s.alert && s.alert.kind === 'permission')) {
+        if (!s.stopped && !s.alert) {
+          this.setAlert(s, question ? '질문에 답 대기 중' : '입력 대기 중', '', 'input', '');
+        }
+      } else if (permission && !s.stopped && !(s.alert && s.alert.kind === 'permission')) {
         // permission_request가 이미 알림을 띄웠으면 중복 발화하지 않는다 (fallback 경로).
         // 턴 종료 후 뒤늦게 도착한 이벤트가 완료 알림을 낡은 permission 알림으로
         // 덮지 않도록 stop 이후에는 무시한다
         const d = this.toolDetail(s);
         this.setAlert(s, d.text || msg, d.desc, 'permission', d.name);
       }
+      // 그 외(auth_success, agent_completed, quota_auto_resume_* 등)는 판단이
+      // 필요한 일이 아니므로 알림을 띄우지 않는다
     } else if (type === 'stop') {
       // 턴이 끝나면 초록색 완료 알림을 띄워 다음 요청을 바로 보낼 수 있게 한다.
       // 다음 user_prompt_submit이나 도구 실행 이벤트가 오면 해소된다.
@@ -240,6 +252,14 @@ class Sessions extends EventEmitter {
     // session_id가 붙은 카드가 있으면 같은 cwd라도 별도 카드로 만든다.
     if (sessionId && s && s.sessionId && s.sessionId !== sessionId) {
       key = baseKey + '#' + sessionId;
+      if (!this.map.has(key)) {
+        diag.log('sessions', 'extra card for same folder', {
+          key,
+          existing: [...this.map.values()]
+            .filter((o) => o.agent === agent && o.cwd === cwd)
+            .map((o) => ({ key: o.key, idleMin: Math.round((Date.now() - o.lastEvent) / 60000), scanSeen: !!o.scanSeen })),
+        });
+      }
       s = this.map.get(key);
     }
     if (!s) {
@@ -412,35 +432,49 @@ class Sessions extends EventEmitter {
   }
 
   // 스캐너가 확인한 실행 중 세션 목록([{agent, cwd}])과 동기화한다.
-  // 스캐너가 한 번이라도 확인한 세션만 스캔 소실로 제거해서,
-  // 프로세스 이름이 달라 스캔에 안 잡히는 환경에서 hook 세션이 지워지는 것을 막는다.
+  // 같은 폴더(에이전트 기준)의 프로세스 수만큼만 카드를 살아 있는 것으로 보고,
+  // 최근 이벤트 순으로 그 수까지만 확인 표시를 준다. 넘치는 카드는 3회 연속
+  // (약 30초) 초과 상태면 제거한다. 같은 폴더에서 세션을 다시 시작하면
+  // (/clear, 재실행, VS Code 확장의 새 대화) 새 session_id 카드가 생기는데,
+  // 예전 세션의 카드가 SessionEnd 없이 남아 같은 폴더 카드가 쌓이던 문제의
+  // 정리 경로다 (2026-09-23).
+  // 스캔에 한 번도 잡힌 적 없는 폴더의 카드(프로세스 이름이 달라 스캔에 안
+  // 잡히는 환경 등)는 건드리지 않는다.
   syncScanned(entries) {
-    const seen = new Set();
+    const counts = new Map(); // agent + cwd -> 프로세스 수
     for (const e of entries) {
-      const agent = normAgent(e.agent);
-      const baseKey = sessionKey(agent, e.cwd);
-      let s = this.map.get(baseKey);
-      if (!s) {
-        s = [...this.map.values()].find((candidate) =>
-          candidate.agent === agent && candidate.cwd === e.cwd
-        );
-      }
-      const key = s ? s.key : baseKey;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (!s) {
+      const k = normAgent(e.agent) + '\0' + e.cwd;
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+    const alive = new Set();
+    const excess = new Set();
+    for (const [k, n] of counts) {
+      const [agent, cwd] = k.split('\0');
+      const group = [...this.map.values()]
+        .filter((s) => s.agent === agent && s.cwd === cwd)
+        .sort((a, b) => b.lastEvent - a.lastEvent);
+      if (!group.length) {
+        const key = sessionKey(agent, cwd);
         console.log('[scan] found running session ' + key);
-        s = this.ensure(agent, e.cwd, '');
+        group.push(this.ensure(agent, cwd, ''));
       }
-      s.scanSeen = true;
-      s.scanMiss = 0;
+      group.forEach((s, i) => (i < n ? alive : excess).add(s.key));
     }
     for (const [key, s] of [...this.map]) {
-      if (seen.has(key)) continue;
-      if (!s.scanSeen) continue;
+      if (alive.has(key)) {
+        s.scanSeen = true;
+        s.scanMiss = 0;
+        continue;
+      }
+      if (!s.scanSeen && !excess.has(key)) continue;
       s.scanMiss = (s.scanMiss || 0) + 1;
       if (s.scanMiss >= 3) {
         console.log('[scan] process gone, removing ' + key);
+        diag.log('scan', excess.has(key) ? 'removing extra card' : 'removing gone card', {
+          key,
+          idleMin: Math.round((Date.now() - s.lastEvent) / 60000),
+          alert: s.alert ? s.alert.kind : '',
+        });
         this.remove(key);
       }
     }

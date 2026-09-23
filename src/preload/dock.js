@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('api', {
   setY: (map) => ipcRenderer.send('set-card-y', map),
   setOpacity: (v) => ipcRenderer.send('set-opacity', v),
   mouseCapture: (on) => ipcRenderer.send('mouse-capture', on),
+  diag: (tag, event, data) => ipcRenderer.send('diag', tag, event, data),
 });

@@ -119,6 +119,42 @@ app.whenReady().then(async () => {
     'existing Claude alert behavior still moves the card below'
   );
 
+  // 접기 버그 회귀: 사용량 펄스로 패널이 튀어나온 동안 접기를 누르면 실제로
+  // 접혀야 한다 (예전에는 바운스 keyframes가 transform을 잡고 있어 안 접혔다)
+  const ctrlX = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const m = getComputedStyle(document.getElementById('ctrl')).transform;
+        const p = m.match(/matrix\\(([^)]+)\\)/);
+        return { x: p ? Number(p[1].split(',')[4]) : 0,
+                 arrow: document.getElementById('tArrow').textContent,
+                 out: document.getElementById('ctrl').classList.contains('out') };
+      })()
+    `);
+  const usage = [{ key: 'session', label: '세션', percent: 40, resetsAt: new Date(Date.now() + 3600e3).toISOString(), asOf: Date.now() }];
+  win.webContents.send('state', { cards: [second], opacity: 1, usage, usagePulse: 1 });
+  await wait(80);
+  win.webContents.send('state', { cards: [second], opacity: 1, usage, usagePulse: 2 });
+  await wait(300);
+  let st = await ctrlX();
+  assert.ok(st.out && st.arrow === '›', 'pulse pops the panel out with a collapse arrow');
+  await win.webContents.executeJavaScript(`document.getElementById('toggle').click()`);
+  await wait(400);
+  st = await ctrlX();
+  assert.ok(!st.out && st.x > 100 && st.arrow === '‹', 'toggle during pulse collapses the panel: ' + JSON.stringify(st));
+  await win.webContents.executeJavaScript(`document.getElementById('toggle').click()`);
+  await wait(300);
+  st = await ctrlX();
+  assert.ok(st.out && st.x < 2, 'toggle expands all');
+  await win.webContents.executeJavaScript(`document.getElementById('toggle').click()`);
+  await wait(400);
+  st = await ctrlX();
+  assert.ok(!st.out && st.x > 100, 'toggle collapses all again: ' + JSON.stringify(st));
+  const strip = await win.webContents.executeJavaScript(`document.getElementById('tPct').textContent`);
+  assert.ok(/40%/.test(strip) && /\d+h\d+m|\d+m/.test(strip), 'collapsed strip shows percent and time left: ' + strip);
+  const resetRows = await win.webContents.executeJavaScript(`[...document.querySelectorAll('.uReset')].map((e) => e.textContent)`);
+  assert.ok(resetRows.length === 1 && /^리셋 (오늘|내일) \d\d:\d\d/.test(resetRows[0]), 'row shows reset time: ' + resetRows);
+
   win.destroy();
   app.quit();
 }).catch((error) => {

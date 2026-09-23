@@ -76,14 +76,23 @@ class Scanner {
   }
 
   scan() {
-    execFile('/bin/ps', ['-axo', 'pid=,command='], (err, out) => {
+    execFile('/bin/ps', ['-axo', 'pid=,ppid=,command='], (err, out) => {
       if (err) return;
       const agents = new Map(); // pid -> agent
+      const ppids = new Map(); // pid -> ppid
       for (const line of out.split('\n')) {
-        const m = line.match(/^\s*(\d+)\s+(.*)$/);
+        const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
         if (!m) continue;
-        const agent = agentOf(m[2]);
-        if (agent) agents.set(m[1], agent);
+        const agent = agentOf(m[3]);
+        if (agent) {
+          agents.set(m[1], agent);
+          ppids.set(m[1], m[2]);
+        }
+      }
+      // 같은 에이전트 프로세스의 자식(codex npm 래퍼 밑의 바이너리 등)은 별개
+      // 세션이 아니므로 뺀다. 폴더당 프로세스 수를 세션 수로 쓰기 위함이다
+      for (const [pid, ppid] of ppids) {
+        if (agents.get(ppid) === agents.get(pid)) agents.delete(pid);
       }
       if (agents.size === 0) {
         this.sessions.syncScanned([]);

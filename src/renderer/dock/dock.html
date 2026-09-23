@@ -17,27 +17,30 @@
   /* 컨트롤 패널: 맨 위에 상시 노출. 접혀 있으면 [<] 버튼과 세션 사용량 %만
      보이고, 누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더 +
      사용량 게이지가 나타난다. 카드처럼 오른쪽 11px를 화면 밖에 묻어
-     바운스 때 온전한 모서리가 드러난다 (접힘 폭 26 = 148 - 111 - 11) */
+     바운스 때 온전한 모서리가 드러난다 (접힘 폭 26 = 168 - 131 - 11) */
   #ctrl {
     position: absolute;
     top: 14px;
     right: -11px;
-    width: 148px;
+    width: 168px;
     box-sizing: border-box;
     display: flex;
     align-items: stretch;
     border-radius: 10px;
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(0, 0, 0, 0.2);
-    transform: translateX(111px);
+    transform: translateX(131px);
     transition: transform 0.22s ease;
     z-index: 5;
   }
   #ctrl.out {
     transform: translateX(0);
   }
-  /* 사용량 계단 돌파 알림: 패널도 카드와 같은 문법으로 바운스한다 */
-  #ctrl.boing {
+  /* 사용량 계단 돌파 알림: 패널도 카드와 같은 문법으로 바운스한다.
+     반드시 .out과 함께 걸어야 한다. 바운스 keyframes가 transform을 점유하므로
+     .out만 빠지고 .boing이 남으면 접기를 눌러도 패널이 펼쳐진 채 버티다가
+     애니메이션이 끝나는 순간 뚝 끊기며 들어간다 (2026-09 접기 버그 원인 1) */
+  #ctrl.out.boing {
     transform-origin: right center;
     animation: boing 3s 2;
   }
@@ -68,10 +71,42 @@
   #tPct:empty {
     display: none;
   }
+  #tPct .claude,
+  #tPct .model {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  #tPct .model {
+    margin-top: 2px;
+  }
   #tPct .codex {
-    padding: 0 3px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 2px;
     border: 1px solid rgba(0, 0, 0, 0.25);
     border-radius: 6px 3px 3px 6px;
+  }
+  /* 접힌 띠의 항목 이름(5h, Fable)과 리셋까지 남은 시간 (예: 2h10m, 1d15h) */
+  #tPct .tLab,
+  #tPct .tLeft {
+    font-size: 6.5px;
+    color: rgba(0, 0, 0, 0.4);
+    letter-spacing: -0.2px;
+    max-width: 24px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #tPct .tLab {
+    color: rgba(0, 0, 0, 0.3);
+  }
+  /* 오래된 값(마지막 갱신 2시간 이상 전이거나 저장본): 흐리게 */
+  #tPct .old,
+  .uRow.old,
+  .uReset.old {
+    opacity: 0.55;
   }
   /* 두 에이전트의 게이지가 함께 있을 때만 붙는 구분 제목 */
   .uHead {
@@ -148,6 +183,32 @@
     text-align: right;
     font-size: 8.5px;
     color: rgba(0, 0, 0, 0.6);
+  }
+  /* 행 아래 줄: 왼쪽에 리셋 날짜와 시각, 오른쪽에 남은 시간. 툴팁이 아니라
+     늘 보인다. 한 줄에 다 안 들어가면 날짜 쪽만 말줄임된다 */
+  .uReset {
+    display: flex;
+    justify-content: space-between;
+    gap: 4px;
+    margin-top: -3px;
+    font-size: 7.5px;
+    line-height: 1.2;
+    color: rgba(0, 0, 0, 0.45);
+    white-space: nowrap;
+  }
+  .uReset .when {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .uReset .left {
+    flex: 0 0 auto;
+  }
+  .uReset:empty {
+    display: none;
+  }
+  .uRow.crit + .uReset {
+    color: #c03020;
   }
   /* 사용량이 임계(80%)를 넘으면 접힌 상태의 토글 색으로도 알 수 있다 */
   #ctrl.usageWarn #toggle {
@@ -486,14 +547,90 @@
   // settling: 알림이 막 해소된 카드는 내용과 폭 전환이 끝날 때까지 펼친 채
   // 둔다. 전환 중의 낡은 폭으로 접으면 카드가 화면 밖까지 밀려 사라진다.
   // front: 맨 앞 창(현재 보고 있는 창)의 세션 카드는 펼쳐진 채 유지한다.
+  // hover는 CSS :hover 대신 mousemove로 관리하는 c.hover를 쓴다. 도크 창은
+  // 마우스 이벤트를 통과시키는(forward) 상태라 커서가 창 밖으로 나갈 때
+  // mouseleave가 오지 않으면 :hover가 켜진 채 남을 수 있고, 그러면 접기를
+  // 눌러도 그 카드만 펼쳐진 채 버틴다 (2026-09 접기 버그 의심 원인 2).
+  function computeOut(c) {
+    const reasons = [];
+    if (allOut) reasons.push('allOut');
+    if (c.state && c.state.alert) reasons.push('alert');
+    if (c.state && c.state.front) reasons.push('front');
+    if (c.settling) reasons.push('settling');
+    if (c.hover && !c.suppressHover) reasons.push('hover');
+    if (drag && drag.card === c) reasons.push('drag');
+    return reasons;
+  }
+
   function applyOut(c) {
-    const out =
-      allOut ||
-      (c.state && (c.state.alert || c.state.front)) ||
-      c.settling ||
-      (c.el.matches(':hover') && !c.suppressHover) ||
-      (drag && drag.card === c);
-    c.el.classList.toggle('out', !!out);
+    c.el.classList.toggle('out', computeOut(c).length > 0);
+  }
+
+  function setHover(c, on) {
+    if (c.hover === on) return;
+    c.hover = on;
+    if (!on) c.suppressHover = false;
+    applyOut(c);
+  }
+
+  function clearHovers() {
+    for (const c of cards.values()) setHover(c, false);
+  }
+
+  // 진단 로그: 재현이 드문 접기 문제의 단서를 main의 diag.log 파일에 남긴다
+  function diag(tag, event, data) {
+    try {
+      window.api.diag(tag, event, data);
+    } catch (e) {
+      // 로그 실패는 무시
+    }
+  }
+
+  // transform 행렬에서 translateX를 읽는다 (애니메이션 중 실제 위치)
+  function translateX(el) {
+    const m = getComputedStyle(el).transform;
+    if (!m || m === 'none') return 0;
+    const parts = m.match(/matrix\(([^)]+)\)/);
+    if (!parts) return 0;
+    return Number(parts[1].split(',')[4]) || 0;
+  }
+
+  function ctrlSnapshot() {
+    return {
+      allOut,
+      classes: ctrl.className,
+      x: Math.round(translateX(ctrl)),
+      animations: ctrl.getAnimations().map((a) => (a.animationName || 'transition:' + a.transitionProperty) + ':' + a.playState),
+      pulsing: !!pulseTimer,
+    };
+  }
+
+  function cardSnapshot(c) {
+    return {
+      key: c.el.dataset.key,
+      reasons: computeOut(c),
+      classOut: c.el.classList.contains('out'),
+      x: Math.round(translateX(c.el)),
+      peek: Math.round(parseFloat(c.el.style.getPropertyValue('--peek-x')) || 0),
+      cssHover: c.el.matches(':hover'),
+      animations: c.el.getAnimations().map((a) => (a.animationName || 'transition:' + a.transitionProperty) + ':' + a.playState),
+    };
+  }
+
+  // 접기 조작 뒤 전환이 끝났을 시점에 실제로 접혔는지 확인한다. 접혀야 하는데
+  // 펼쳐진 채면 그 순간의 상태를 통째로 남겨 다음 개발 때 원인을 좁힌다.
+  function verifyCollapse(why) {
+    const stuck = [];
+    const ctrlOutExpected = allOut || !!pulseTimer;
+    const cs = ctrlSnapshot();
+    if (!ctrlOutExpected && cs.x < 100) stuck.push({ ctrl: cs });
+    for (const c of cards.values()) {
+      const snap = cardSnapshot(c);
+      const expectedOut = snap.reasons.length > 0;
+      if (!expectedOut && snap.peek > 0 && snap.x < snap.peek - 2) stuck.push(snap);
+      if (snap.cssHover && !c.hover) diag('card', 'css-hover-mismatch', snap);
+    }
+    if (stuck.length) diag('collapse', 'stuck after ' + why, stuck);
   }
 
   // 접혔을 때 밀어넣는 거리 (보이는 띠 22px + 오른쪽 묻힘 11px = 33)
@@ -501,13 +638,84 @@
     c.el.style.setProperty('--peek-x', c.el.offsetWidth - 33 + 'px');
   }
 
+  // 리셋 시각 표기. 날짜와 시각을 늘 함께 보이되 오늘, 내일은 말로 줄인다
+  const DAYS = ['일', '월', '화', '수', '목', '금', '토'];
+  function two(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+  function fmtReset(d) {
+    const now = new Date();
+    const hm = two(d.getHours()) + ':' + two(d.getMinutes());
+    const dayOf = (x) => Math.floor((x.getTime() - x.getTimezoneOffset() * 60000) / 86400000);
+    const diff = dayOf(d) - dayOf(now);
+    if (diff === 0) return '오늘 ' + hm;
+    if (diff === 1) return '내일 ' + hm;
+    return d.getMonth() + 1 + '/' + d.getDate() + ' (' + DAYS[d.getDay()] + ') ' + hm;
+  }
+
+  // 리셋까지 남은 시간을 아주 짧게 (접힌 띠 폭 26px에 들어가야 한다)
+  function fmtLeft(d) {
+    const ms = d.getTime() - Date.now();
+    if (ms <= 0) return '';
+    const min = Math.ceil(ms / 60000);
+    if (min < 60) return min + 'm';
+    const h = Math.floor(min / 60);
+    if (h < 24) return h + 'h' + two(min % 60) + 'm';
+    const days = Math.floor(h / 24);
+    return days + 'd' + (h % 24) + 'h';
+  }
+
+  // 남은 시간을 말로 (툴팁과 펼친 행)
+  function fmtLeftLong(d) {
+    const ms = d.getTime() - Date.now();
+    if (ms <= 0) return '';
+    const min = Math.ceil(ms / 60000);
+    if (min < 60) return min + '분 후';
+    const h = Math.floor(min / 60);
+    if (h < 24) return h + '시간 ' + (min % 60) + '분 후';
+    return Math.floor(h / 24) + '일 ' + (h % 24) + '시간 후';
+  }
+
+  function agentName(u) {
+    return u.agent === 'codex' ? 'Codex' : 'Claude';
+  }
+
+  // 마지막 갱신이 오래됐거나(2시간) 지난 실행의 저장본이면 흐리게 표시한다
+  const OLD_MS = 2 * 60 * 60 * 1000;
+  function isOld(u) {
+    return !u.asOf || Date.now() - u.asOf > OLD_MS;
+  }
+
+  function fmtAgo(ts) {
+    if (!ts) return '이전 실행에서 저장한 값';
+    const min = Math.round((Date.now() - ts) / 60000);
+    if (min < 1) return '방금 갱신';
+    if (min < 60) return min + '분 전 갱신';
+    const h = Math.floor(min / 60);
+    if (h < 24) return h + '시간 ' + (min % 60) + '분 전 갱신';
+    return Math.floor(h / 24) + '일 전 갱신';
+  }
+
+  function rowTitle(u, reset) {
+    return (
+      agentName(u) + ' ' + u.label + ' ' + u.percent + '% 사용' +
+      (u.plan ? ' (' + u.plan + ')' : '') +
+      (reset ? '\n재설정: ' + reset.toLocaleString() + ' (' + fmtLeftLong(reset) + ')' : '') +
+      '\n' + fmtAgo(u.asOf)
+    );
+  }
+
   // 플랜 사용량 게이지. 값이 바뀔 때만 다시 그린다 (상태 메시지는
-  // hook 이벤트마다 오지만 사용량은 가끔만 바뀐다).
+  // hook 이벤트마다 오지만 사용량은 가끔만 바뀐다). 남은 시간 표기는
+  // 시간이 흐르면 달라지므로 1분마다 강제로 다시 그린다.
   let lastUsageJson = '';
-  function renderUsage(list) {
+  let lastUsageList = null;
+  setInterval(() => renderUsage(lastUsageList, true), 60 * 1000);
+  function renderUsage(list, force) {
     const json = JSON.stringify(list || null);
-    if (json === lastUsageJson) return;
+    if (json === lastUsageJson && !force) return;
     lastUsageJson = json;
+    lastUsageList = list;
     usageEl.innerHTML = '';
     const has = Array.isArray(list) && list.length > 0;
     usageEl.classList.toggle('on', has);
@@ -526,12 +734,11 @@
           lastAgent = agent;
         }
         const row = document.createElement('div');
-        row.className = 'uRow' + (u.percent >= 95 ? ' crit' : u.percent >= 80 ? ' warn' : '');
+        row.className =
+          'uRow' + (u.percent >= 95 ? ' crit' : u.percent >= 80 ? ' warn' : '') + (isOld(u) ? ' old' : '');
         if (u.percent >= 80) warn = true;
         const reset = u.resetsAt ? new Date(u.resetsAt) : null;
-        row.title =
-          (u.agent === 'codex' ? 'Codex ' : 'Claude ') + u.label + ' ' + u.percent + '% 사용' +
-          (reset ? '\n재설정: ' + reset.toLocaleString() : '');
+        row.title = rowTitle(u, reset);
         row.innerHTML =
           '<div class="uLabel"></div><div class="uBar"><div class="uFill"></div></div>' +
           '<div class="uPct"></div>';
@@ -539,26 +746,64 @@
         row.querySelector('.uFill').style.width = Math.min(100, u.percent) + '%';
         row.querySelector('.uPct').textContent = u.percent + '%';
         usageEl.appendChild(row);
+        // 리셋 날짜와 시각은 툴팁이 아니라 행 아래에 늘 보인다
+        const resetEl = document.createElement('div');
+        resetEl.className = 'uReset' + (isOld(u) ? ' old' : '');
+        if (reset && !isNaN(reset.getTime())) {
+          const when = document.createElement('span');
+          when.className = 'when';
+          when.textContent = '리셋 ' + fmtReset(reset);
+          resetEl.appendChild(when);
+          const left = fmtLeft(reset);
+          if (left) {
+            const l = document.createElement('span');
+            l.className = 'left';
+            l.textContent = left;
+            resetEl.appendChild(l);
+          }
+          resetEl.title = row.title;
+        }
+        usageEl.appendChild(resetEl);
       }
     }
     ctrl.classList.toggle('usageWarn', warn);
-    // 접힌 토글 아래에 상시 표시: Claude 세션 %와 Codex 첫 한도 %
+    // 접힌 토글 아래에 상시 표시: 지금 쓰고 있는 세션(5시간 창) 사용량만.
+    // Claude 세션과, Codex에 세션 창 한도가 오는 플랜이면 그것도. 주간 한도
+    // (전체, Fable 등 모델별, Codex 주간)는 펼쳤을 때 행으로 본다
+    // (사용자 결정 2026-09-23: 접혔을 때는 당장 쓰는 것의 정보만).
+    // 각각 % 아래에 리셋까지 남은 시간을 붙인다
     tPct.innerHTML = '';
     const session = has ? list.find((u) => u.key === 'session') : null;
-    const codex = has ? list.find((u) => u.agent === 'codex') : null;
-    if (session) {
-      const el = document.createElement('span');
-      el.textContent = session.percent + '%';
-      el.title = 'Claude 세션 ' + session.percent + '%';
-      tPct.appendChild(el);
-    }
-    if (codex) {
-      const el = document.createElement('span');
-      el.className = 'codex';
-      el.textContent = codex.percent + '%';
-      el.title = 'Codex ' + codex.label + ' ' + codex.percent + '%';
-      tPct.appendChild(el);
-    }
+    const codex = has
+      ? list.find((u) => u.agent === 'codex' && u.windowMinutes > 0 && u.windowMinutes <= 300)
+      : null;
+    // 접힌 띠: % 아래에 리셋까지 남은 시간을 짧게 붙인다 (요청: 얼마나 남았고
+    // 언제 리셋되는지를 펼치지 않아도 알 수 있게)
+    const strip = (u, cls, lab) => {
+      const wrap = document.createElement('span');
+      wrap.className = cls + (isOld(u) ? ' old' : '');
+      const reset = u.resetsAt ? new Date(u.resetsAt) : null;
+      wrap.title = rowTitle(u, reset);
+      if (lab) {
+        const l = document.createElement('span');
+        l.className = 'tLab';
+        l.textContent = lab;
+        wrap.appendChild(l);
+      }
+      const pct = document.createElement('span');
+      pct.textContent = u.percent + '%';
+      wrap.appendChild(pct);
+      const left = reset ? fmtLeft(reset) : '';
+      if (left) {
+        const l = document.createElement('span');
+        l.className = 'tLeft';
+        l.textContent = left;
+        wrap.appendChild(l);
+      }
+      tPct.appendChild(wrap);
+    };
+    if (session) strip(session, 'claude', '');
+    if (codex) strip(codex, 'codex', '');
     layout();
   }
 
@@ -567,24 +812,57 @@
   // 테두리 번쩍임을 더한다.
   let lastPulse = null;
   let pulseTimer = 0;
+  function setArrow() {
+    const out = ctrl.classList.contains('out');
+    tArrow.textContent = out ? '›' : '‹';
+    toggle.title = out ? (allOut ? '모두 접기' : '패널 접기') : '모두 펼치기';
+  }
+
   function usagePulse() {
     ctrl.classList.remove('boing');
     void ctrl.offsetWidth;
     ctrl.classList.add('out', 'boing');
+    setArrow();
     clearTimeout(pulseTimer);
-    pulseTimer = setTimeout(() => {
-      ctrl.classList.remove('boing');
-      if (!allOut) ctrl.classList.remove('out');
-    }, 6500);
+    pulseTimer = setTimeout(() => endPulse('timer'), 6500);
+    diag('ctrl', 'pulse start', ctrlSnapshot());
+  }
+
+  // 펄스 종료: 바운스를 멈추고, 사용자가 펼쳐 둔 상태가 아니면 접는다
+  function endPulse(why) {
+    clearTimeout(pulseTimer);
+    pulseTimer = 0;
+    ctrl.classList.remove('boing');
+    if (!allOut) ctrl.classList.remove('out');
+    setArrow();
+    diag('ctrl', 'pulse end (' + why + ')', ctrlSnapshot());
   }
 
   let settleTimer = 0;
-  // 상태 변화 후 전환이 끝난 시점에 한 번: 해소된 알림의 잔여 텍스트를 비우고,
-  // 최종 크기로 접힘 거리와 세로 배치를 다시 잰다. 알림이 뜰 때 늘어난 높이의
-  // 겹침 밀어내기와 해소 시 줄어든 폭의 접힘 거리가 모두 여기서 확정된다.
+  // 상태 변화 후 전환이 끝난 시점에 카드별로 한 번: 해소된 알림의 잔여 텍스트를
+  // 비우고, 최종 크기로 접힘 거리와 세로 배치를 다시 잰다. 알림이 뜰 때 늘어난
+  // 높이의 겹침 밀어내기와 해소 시 줄어든 폭의 접힘 거리가 모두 여기서 확정된다.
+  // 만기(settleAt)는 카드별로 두고 타이머는 하나만 돌린다. 예전에는 상태 갱신마다
+  // 타이머를 다시 걸어서, 도구 이벤트가 320ms보다 잦게 몰리면 settle이 계속
+  // 미뤄지고 해소된 알림 카드가 접기를 눌러도 펼쳐진 채 남았다
+  // (2026-09 접기 버그 원인 3).
+  function scheduleSettle(delay) {
+    if (settleTimer) return;
+    settleTimer = setTimeout(settle, delay == null ? SETTLE_MS : delay);
+  }
+
   function settle() {
+    settleTimer = 0;
+    // 타이머는 만기보다 몇 ms 일찍 깨어날 수 있으므로 약간의 여유를 둔다
+    const now = Date.now() + 8;
+    let next = 0;
     for (const c of cards.values()) {
-      if (!c.state) continue;
+      if (!c.state || !c.settleAt) continue;
+      if (c.settleAt > now) {
+        next = next ? Math.min(next, c.settleAt) : c.settleAt;
+        continue;
+      }
+      c.settleAt = 0;
       if (!c.state.alert && (c.msg.textContent || c.desc.textContent)) {
         c.msg.textContent = '';
         c.msg.title = '';
@@ -596,6 +874,7 @@
       applyOut(c);
     }
     layout();
+    if (next) scheduleSettle(Math.max(10, next - Date.now()));
   }
 
   // 투명도는 전역 하나를 일반 카드와 컨트롤 패널에 똑같이 적용한다.
@@ -615,11 +894,21 @@
   }
 
   toggle.addEventListener('click', () => {
-    allOut = !allOut;
-    ctrl.classList.toggle('out', allOut);
-    tArrow.textContent = allOut ? '›' : '‹';
-    toggle.title = allOut ? '모두 접기' : '모두 펼치기';
-    for (const c of cards.values()) applyOut(c);
+    const before = { ctrl: ctrlSnapshot(), cards: [...cards.values()].map(cardSnapshot) };
+    // 커서는 토글 위에 있으므로 어떤 카드도 hover일 수 없다
+    clearHovers();
+    if (!allOut && ctrl.classList.contains('out')) {
+      // 사용량 펄스로 잠깐 펼쳐진 패널. 화살표가 접기(›)를 가리키므로 펄스만 끝낸다
+      endPulse('toggle');
+    } else {
+      allOut = !allOut;
+      if (allOut) ctrl.classList.add('out');
+      else endPulse('toggle');
+      for (const c of cards.values()) applyOut(c);
+    }
+    setArrow();
+    diag('ctrl', 'toggle', { before, after: ctrlSnapshot() });
+    setTimeout(() => verifyCollapse('toggle'), SETTLE_MS + 200);
   });
 
   opSlider.addEventListener('input', () => {
@@ -720,12 +1009,12 @@
       bump: '',
       settling: false,
       suppressHover: false,
+      hover: false,
+      settleAt: 0,
+      sig: '',
     };
-    el.addEventListener('mouseenter', () => applyOut(c));
-    el.addEventListener('mouseleave', () => {
-      c.suppressHover = false;
-      applyOut(c);
-    });
+    el.addEventListener('mouseenter', () => setHover(c, true));
+    el.addEventListener('mouseleave', () => setHover(c, false));
 
     el.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -780,7 +1069,9 @@
       startDrag(down.c, e);
       return;
     }
-    setCapture(!!(e.target.closest('.card') || e.target.closest('#ctrl')));
+    const overCard = e.target.closest('.card');
+    for (const c of cards.values()) setHover(c, overCard === c.el);
+    setCapture(!!(overCard || e.target.closest('#ctrl')));
   });
 
   document.addEventListener('mouseup', () => {
@@ -795,6 +1086,7 @@
 
   document.documentElement.addEventListener('mouseleave', () => {
     if (drag) endDrag();
+    clearHovers();
     setCapture(false);
   });
 
@@ -857,6 +1149,13 @@
         if (hadAlert) c.settling = true;
       }
       c.err.textContent = s.err || '';
+      // 크기에 영향을 주는 값이 바뀐 카드만 전환 뒤 settle 대상이 된다
+      const sig = [s.name, s.agent, !!s.alert, s.alert ? s.message : '', s.alert ? s.desc : '', s.err]
+        .join('\u0000');
+      if (sig !== c.sig) {
+        c.sig = sig;
+        c.settleAt = Date.now() + SETTLE_MS;
+      }
       c.el.classList.toggle('alert', !!s.alert);
       c.el.classList.toggle('working', !!s.working);
       c.el.classList.toggle('waiting', !s.alert && !s.working);
@@ -897,8 +1196,7 @@
     }
     layout();
     // 전환이 끝난 뒤 최종 크기로 접힘 거리와 배치를 확정한다
-    clearTimeout(settleTimer);
-    settleTimer = setTimeout(settle, SETTLE_MS);
+    scheduleSettle();
   });
 </script>
 </body>

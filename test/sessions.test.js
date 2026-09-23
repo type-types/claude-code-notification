@@ -56,6 +56,33 @@ test('first hook session adopts an existing scan-only card', (t) => {
   assert.equal(sessions.byId.get(sessionIdKey('codex', 'hooked')).key, scannedKey);
 });
 
+test('cards beyond the running process count for a folder are removed after three scans', (t) => {
+  const sessions = createSessions();
+  t.after(() => clearInterval(sessions.staleTimer));
+  const cwd = '/work/project';
+  sessions.handleEvent({ type: 'session_start', agent: 'claude', cwd, session_id: 'old' });
+  const old = sessions.byId.get(sessionIdKey('claude', 'old'));
+  old.lastEvent -= 60 * 1000;
+  sessions.handleEvent({ type: 'session_start', agent: 'claude', cwd, session_id: 'new' });
+  assert.equal(sessions.map.size, 2, 'restart in the same folder makes a second card');
+
+  // 프로세스 2개면 둘 다 유지
+  sessions.syncScanned([{ agent: 'claude', cwd }, { agent: 'claude', cwd }]);
+  sessions.syncScanned([{ agent: 'claude', cwd }, { agent: 'claude', cwd }]);
+  sessions.syncScanned([{ agent: 'claude', cwd }, { agent: 'claude', cwd }]);
+  assert.equal(sessions.map.size, 2);
+
+  // 프로세스 1개면 이벤트가 오래된 카드가 정리된다
+  for (let i = 0; i < 3; i++) sessions.syncScanned([{ agent: 'claude', cwd }]);
+  assert.equal(sessions.map.size, 1);
+  assert.equal([...sessions.map.values()][0].sessionId, 'new');
+
+  // 다른 폴더의 hook 전용 카드(스캔에 안 잡힘)는 건드리지 않는다
+  sessions.handleEvent({ type: 'session_start', agent: 'claude', cwd: '/elsewhere', session_id: 'x' });
+  for (let i = 0; i < 3; i++) sessions.syncScanned([{ agent: 'claude', cwd }]);
+  assert.equal(sessions.map.size, 2);
+});
+
 test('Claude and Codex may reuse the same raw session id', (t) => {
   const sessions = createSessions();
   t.after(() => clearInterval(sessions.staleTimer));

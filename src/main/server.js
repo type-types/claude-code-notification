@@ -2,7 +2,8 @@ const http = require('http');
 
 const BODY_LIMIT = 262144;
 
-function startServer(port, onEvent) {
+// onState: 진단용 GET /state 응답을 만드는 함수 (선택). 127.0.0.1 전용이다.
+function startServer(port, onEvent, onState) {
   const srv = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     if (req.method === 'POST' && url.pathname === '/event') {
@@ -26,6 +27,11 @@ function startServer(port, onEvent) {
         res.writeHead(204);
         res.end();
       });
+    } else if (req.method === 'GET' && url.pathname === '/state' && onState) {
+      // 현재 카드와 사용량 상태. 패키징된 앱은 콘솔이 없으므로 문제를 볼 때
+      // curl http://127.0.0.1:48923/state 로 확인한다
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(onState(), null, 2));
     } else if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('ok');
