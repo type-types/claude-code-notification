@@ -1,6 +1,6 @@
 const path = require('path');
 
-const WATCH_APPS = new Set(['Code', 'Code - Insiders', 'Claude', 'iTerm2', 'Terminal']);
+const WATCH_APPS = new Set(['Code', 'Code - Insiders', 'Claude', 'iTerm2', 'Terminal', 'Codex', 'ChatGPT']);
 
 function originMatchesApp(origin, app) {
   if (!origin || (!origin.termProgram && !origin.bundleId)) return null;
@@ -14,6 +14,7 @@ function originMatchesApp(origin, app) {
     return origin.termProgram === 'Apple_Terminal' || origin.bundleId === 'com.apple.Terminal';
   }
   if (app === 'Claude') return /anthropic|claude/i.test(origin.bundleId || '');
+  if (app === 'Codex' || app === 'ChatGPT') return origin.bundleId === 'com.openai.codex';
   return false;
 }
 

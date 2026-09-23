@@ -1126,7 +1126,7 @@
       if (s.y != null && Date.now() - c.movedAt > 2000) c.baseY = s.y;
       c.name.textContent = s.name || '';
       c.name.title =
-        (s.agent === 'codex' ? 'Codex' : 'Claude Code') + '  ' + s.cwd +
+        (s.agent === 'codex' ? (s.desktop ? 'Codex 앱' : 'Codex') : 'Claude Code') + '  ' + s.cwd +
         (s.origin ? '\n출처: ' + s.origin : '') + '\n클릭하면 해당 창이 열립니다';
       c.el.classList.toggle('codex', s.agent === 'codex');
       if (s.alert) {

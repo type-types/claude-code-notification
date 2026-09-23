@@ -162,10 +162,17 @@ class Sessions extends EventEmitter {
       const s = this.ensure(agent, cwd, evt.session_id);
       this.resolveIfMatches(s, evt.tool_name || '');
     } else if (type === 'user_prompt_submit') {
-      // 사용자가 직접 입력을 보냈으면 어떤 알림이든 응답된 것이다
+      // 사용자가 직접 입력을 보냈으면 어떤 알림이든 응답된 것이다.
+      // Codex 앱 세션 기록에서 온 이벤트는 실제 턴 시작 시각을 실어 온다
       const s = this.ensure(agent, cwd, evt.session_id);
       s.stopped = false;
-      s.turnStart = Date.now();
+      s.turnStart = Number(evt.turn_started_at) || Date.now();
+      this.resolveAlert(s);
+    } else if (type === 'turn_aborted') {
+      // 사용자가 턴을 중단함 (Codex 앱 세션 기록). 요청받은 것이 없는 상태로 돌아간다
+      const s = this.ensure(agent, cwd, evt.session_id);
+      s.stopped = true;
+      s.turnStart = 0;
       this.resolveAlert(s);
     } else if (type === 'notification') {
       // Claude Code 전용 이벤트 (Codex에는 없다). 페이로드의 notification_type
@@ -204,12 +211,18 @@ class Sessions extends EventEmitter {
       const known = evt.session_id ? this.byId.get(sessionIdKey(agent, evt.session_id)) : null;
       this.remove(known ? known.key : sessionKey(agent, cwd));
     }
+    const current = evt.session_id ? this.byId.get(sessionIdKey(agent, evt.session_id)) : null;
     if (evt.term_program || evt.bundle_id) {
-      const current = evt.session_id ? this.byId.get(sessionIdKey(agent, evt.session_id)) : null;
       this.setOrigin(current ? current.key : sessionKey(agent, cwd), {
         termProgram: evt.term_program || '',
         bundleId: evt.bundle_id || '',
       });
+    }
+    // Codex 데스크톱 앱 스레드: 프로세스가 없으므로 스캔 정리 대상에서 빼고,
+    // 세션 종료 메뉴도 뜻이 없다
+    if (evt.desktop && current && !current.desktop) {
+      current.desktop = true;
+      this.refresh();
     }
   }
 
@@ -305,6 +318,13 @@ class Sessions extends EventEmitter {
   }
 
   setAlert(s, message, desc, kind, toolName) {
+    // 완료 알림이 두 경로(Codex 앱 세션 기록과 hook)로 몇 초 차이로 오면 두 번째는
+    // 소리 없이 소요 시간만 갱신한다
+    if (s.alert && s.alert.kind === 'done' && kind === 'done' && Date.now() - s.alert.ts < 5000) {
+      s.alert.desc = desc || s.alert.desc;
+      this.refresh();
+      return;
+    }
     // 같은 알림의 중복 발화(permission_request와 notification이 둘 다 오는 경우)는
     // 소리와 번쩍임 없이 시각만 갱신한다. desc까지 같아야 중복으로 본다
     // (완료 알림은 메시지가 늘 같아서 desc의 소요 시간이 유일한 차이다)
@@ -391,6 +411,7 @@ class Sessions extends EventEmitter {
     const o = s.origin;
     if (!o) return '';
     if (o.termProgram === 'vscode') return 'VS Code';
+    if (o.bundleId === 'com.openai.codex') return 'Codex 앱';
     if (/anthropic|claude/i.test(o.bundleId || '')) return 'Claude 앱';
     if (o.termProgram === 'iTerm.app') return 'iTerm';
     if (o.termProgram === 'Apple_Terminal') return 'Terminal';
@@ -459,7 +480,7 @@ class Sessions extends EventEmitter {
     for (const [k, n] of counts) {
       const [agent, cwd] = k.split('\0');
       const group = [...this.map.values()]
-        .filter((s) => s.agent === agent && s.cwd === cwd)
+        .filter((s) => s.agent === agent && s.cwd === cwd && !s.desktop)
         .sort((a, b) => b.lastEvent - a.lastEvent);
       if (!group.length) {
         const key = sessionKey(agent, cwd);
@@ -474,6 +495,7 @@ class Sessions extends EventEmitter {
         s.scanMiss = 0;
         continue;
       }
+      if (s.desktop) continue;
       if (!s.scanSeen && !excess.has(key)) continue;
       s.scanMiss = (s.scanMiss || 0) + 1;
       if (s.scanMiss >= 3) {
@@ -513,6 +535,7 @@ class Sessions extends EventEmitter {
       alertTs: s.alert ? s.alert.ts : 0,
       key: s.key,
       agent: s.agent,
+      desktop: !!s.desktop,
       cwd: s.cwd,
       name: names.get(s.cwd),
       origin: this.originLabel(s),

@@ -11,6 +11,7 @@ const { Scanner, findSessionProcs } = require('./scanner');
 const permission = require('./permission');
 const Usage = require('./usage');
 const { frontSessionKeys } = require('./front');
+const CodexRollouts = require('./codexapp');
 const diag = require('./diag');
 
 if (!app.requestSingleInstanceLock()) {
@@ -65,6 +66,7 @@ app.whenReady().then(() => {
         cwd: s.cwd,
         sessionId: s.sessionId,
         idleMin: Math.round((Date.now() - s.lastEvent) / 60000),
+        desktop: !!s.desktop,
         scanSeen: !!s.scanSeen,
         scanMiss: s.scanMiss || 0,
         alert: s.alert ? s.alert.kind : '',
@@ -76,6 +78,8 @@ app.whenReady().then(() => {
     })
   );
   new Scanner(sessions).start();
+  // Codex 데스크톱 앱 스레드는 프로세스가 아니라 세션 기록 파일로 감지한다
+  new CodexRollouts(sessions).start();
   startFrontWatch(sessions);
   setupIpc(sessions, dock);
   setupTray(cfg, border, sessions);
@@ -248,7 +252,11 @@ function setupIpc(sessions, dock) {
       { label: (s.agent === 'codex' ? 'Codex  ' : 'Claude  ') + s.cwd, enabled: false },
       { type: 'separator' },
       { label: '카드 닫기', click: () => sessions.remove(s.key) },
-      { label: '세션 종료 (터미널 닫기)', click: () => killSession(sessions, s) },
+      {
+        label: s.desktop ? '세션 종료 (앱 스레드는 앱에서 닫기)' : '세션 종료 (터미널 닫기)',
+        enabled: !s.desktop,
+        click: () => killSession(sessions, s),
+      },
     ]).popup({ window: dock.win });
   });
 }
