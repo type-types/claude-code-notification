@@ -29,6 +29,13 @@ function normAgent(agent) {
   return AGENTS.has(agent) ? agent : 'claude';
 }
 
+// 경로의 유니코드 정규화를 NFC로 통일한다. 한글 폴더 이름은 hook 페이로드
+// (NFC)와 프로세스 스캔의 lsof 출력(NFD, macOS 파일시스템 형태)이 달라서
+// 같은 폴더가 다른 문자열로 취급돼 카드가 두 장 생겼다 (2026-09-23 실측).
+function normCwd(cwd) {
+  return typeof cwd === 'string' ? cwd.normalize('NFC') : cwd;
+}
+
 // 세션이 2개 이상 같은 마지막 이름을 가지면 구분될 때까지 상위 경로를 붙인다.
 // 입력은 서로 다른 cwd 목록이어야 한다 (같은 폴더의 두 에이전트 세션은
 // 이름이 같아도 카드 모양으로 구분되므로 여기서 갈라 쓰지 않는다).
@@ -119,6 +126,7 @@ class Sessions extends EventEmitter {
     const type = evt && evt.type;
     if (!type || !evt.cwd) return;
     const agent = normAgent(evt.agent);
+    evt.cwd = normCwd(evt.cwd);
     const cwd = this.homeCwd(agent, evt.cwd, evt.session_id, type === 'session_start');
     console.log(
       '[event] ' + agent + ' ' + type + ' ' + evt.cwd + (cwd !== evt.cwd ? ' => ' + cwd : '')
@@ -443,7 +451,7 @@ class Sessions extends EventEmitter {
   syncScanned(entries) {
     const counts = new Map(); // agent + cwd -> 프로세스 수
     for (const e of entries) {
-      const k = normAgent(e.agent) + '\0' + e.cwd;
+      const k = normAgent(e.agent) + '\0' + normCwd(e.cwd);
       counts.set(k, (counts.get(k) || 0) + 1);
     }
     const alive = new Set();
@@ -533,3 +541,4 @@ class Sessions extends EventEmitter {
 module.exports = Sessions;
 module.exports.sessionKey = sessionKey;
 module.exports.sessionIdKey = sessionIdKey;
+module.exports.normCwd = normCwd;

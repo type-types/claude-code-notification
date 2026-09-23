@@ -83,6 +83,20 @@ test('cards beyond the running process count for a folder are removed after thre
   assert.equal(sessions.map.size, 2);
 });
 
+test('NFD path from process scan and NFC path from hooks share one card', (t) => {
+  const sessions = createSessions();
+  t.after(() => clearInterval(sessions.staleTimer));
+  const nfc = '/work/노놀'.normalize('NFC');
+  const nfd = nfc.normalize('NFD');
+  assert.notEqual(nfc, nfd);
+  sessions.syncScanned([{ agent: 'claude', cwd: nfd }]);
+  sessions.handleEvent({ type: 'session_start', agent: 'claude', cwd: nfc, session_id: 'one' });
+  assert.equal(sessions.map.size, 1);
+  assert.equal([...sessions.map.values()][0].cwd, nfc);
+  sessions.handleEvent({ type: 'stop', agent: 'claude', cwd: nfd, session_id: 'one' });
+  assert.equal(sessions.map.size, 1);
+});
+
 test('Claude and Codex may reuse the same raw session id', (t) => {
   const sessions = createSessions();
   t.after(() => clearInterval(sessions.staleTimer));

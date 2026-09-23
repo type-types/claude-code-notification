@@ -1,5 +1,5 @@
 const { execFile } = require('child_process');
-const { sessionKey } = require('./sessions');
+const { sessionKey, normCwd } = require('./sessions');
 
 const SCAN_INTERVAL_MS = 10 * 1000;
 
@@ -108,7 +108,7 @@ class Scanner {
           for (const line of String(out2).split('\n')) {
             if (line.startsWith('p')) pid = Number(line.slice(1));
             else if (line.startsWith('n/')) {
-              entries.push({ pid, agent: agents.get(String(pid)), cwd: line.slice(1) });
+              entries.push({ pid, agent: agents.get(String(pid)), cwd: normCwd(line.slice(1)) });
             }
           }
           this.sessions.syncScanned(entries);
@@ -121,7 +121,10 @@ class Scanner {
   // hook 이벤트 없이 스캔으로만 잡힌 세션의 출처를 프로세스 환경변수로 알아낸다
   fillOrigin(e) {
     const key = sessionKey(e.agent, e.cwd);
-    const s = this.sessions.map.get(key);
+    // 같은 폴더의 세션 ID 접미사 카드도 출처가 없으면 채운다
+    const s =
+      this.sessions.map.get(key) ||
+      [...this.sessions.map.values()].find((c) => c.agent === e.agent && c.cwd === e.cwd && !c.origin);
     if (!s || s.origin) return;
     const cached = this.originCache.get(e.pid);
     if (cached) {
@@ -164,7 +167,7 @@ function findSessionProcs(agent, cwd, cb) {
         let cur = 0;
         for (const line of String(out2).split('\n')) {
           if (line.startsWith('p')) cur = Number(line.slice(1));
-          else if (line.startsWith('n/') && line.slice(1) === cwd) {
+          else if (line.startsWith('n/') && normCwd(line.slice(1)) === normCwd(cwd)) {
             const p = procs.find((x) => x.pid === cur);
             if (p) matches.push(p);
           }
