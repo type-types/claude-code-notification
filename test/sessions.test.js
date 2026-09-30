@@ -108,3 +108,22 @@ test('Claude and Codex may reuse the same raw session id', (t) => {
   assert.equal([...sessions.map.values()].some((s) => s.agent === 'claude'), false);
   assert.equal([...sessions.map.values()].some((s) => s.agent === 'codex'), true);
 });
+
+test('control panel position is stored and sent to the dock', (t) => {
+  const sent = [];
+  const cfg = new Config();
+  const sessions = new Sessions(cfg, { send: (state) => sent.push(state) });
+  t.after(() => clearInterval(sessions.staleTimer));
+
+  sessions.refresh();
+  assert.equal(sent.at(-1).ctrlY, 14, 'default panel position when nothing is saved');
+
+  sessions.setCtrlY(213.6);
+  assert.equal(cfg.get('ctrlY'), 214, 'position is rounded and saved');
+  sessions.setCtrlY('oops');
+  sessions.setCtrlY(-40);
+  assert.equal(cfg.get('ctrlY'), 0, 'invalid values are ignored and negatives clamp to 0');
+
+  sessions.refresh();
+  assert.equal(sent.at(-1).ctrlY, 0, 'saved position rides along with every refresh');
+});

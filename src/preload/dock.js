@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('api', {
   dismiss: (cwd) => ipcRenderer.send('dismiss', cwd),
   menu: (cwd) => ipcRenderer.send('widget-menu', cwd),
   setY: (map) => ipcRenderer.send('set-card-y', map),
+  setCtrlY: (y) => ipcRenderer.send('set-ctrl-y', y),
   setOpacity: (v) => ipcRenderer.send('set-opacity', v),
   mouseCapture: (on) => ipcRenderer.send('mouse-capture', on),
   diag: (tag, event, data) => ipcRenderer.send('diag', tag, event, data),

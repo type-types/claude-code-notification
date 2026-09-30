@@ -232,6 +232,10 @@ function setupIpc(sessions, dock) {
     if (map && typeof map === 'object' && !Array.isArray(map)) sessions.setCardY(map);
   });
 
+  ipcMain.on('set-ctrl-y', (e, v) => {
+    sessions.setCtrlY(v);
+  });
+
   ipcMain.on('set-opacity', (e, v) => {
     sessions.setOpacity(v);
   });

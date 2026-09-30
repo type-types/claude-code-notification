@@ -14,8 +14,9 @@
     /* max-content <-> 고정폭 사이의 width 전환을 허용 (알림 해소 시 부드럽게 줄어들도록) */
     interpolate-size: allow-keywords;
   }
-  /* 컨트롤 패널: 맨 위에 상시 노출. 접혀 있으면 [<] 버튼과 세션 사용량 %만
-     보이고, 누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더 +
+  /* 컨트롤 패널: 기본은 맨 위이고, 카드처럼 잡고 끌어 세로 위치를 바꿀 수
+     있다 (top은 JS가 저장값으로 넣는다). 접혀 있으면 [<] 버튼과 세션 사용량
+     %만 보이고, 누르면 왼쪽으로 튀어나오며 전체 펼침 + 투명도 슬라이더 +
      사용량 게이지가 나타난다. 카드처럼 오른쪽 11px를 화면 밖에 묻어
      바운스 때 온전한 모서리가 드러난다 (접힘 폭 26 = 168 - 131 - 11) */
   #ctrl {
@@ -30,7 +31,8 @@
     background: rgba(255, 255, 255, 0.88);
     border: 1px solid rgba(0, 0, 0, 0.2);
     transform: translateX(131px);
-    transition: transform 0.22s ease;
+    /* top 전환: 카드와 같이, 놓거나 밀릴 때 부드럽게 제자리로 간다 */
+    transition: transform 0.22s ease, top 0.25s ease;
     z-index: 5;
   }
   #ctrl.out {
@@ -44,13 +46,26 @@
     transform-origin: right center;
     animation: boing 3s 2;
   }
+  /* 드래그 중인 패널: 카드와 같은 모양으로, top 전환 없이 커서를 그대로 따라간다 */
+  #ctrl.dragging {
+    transition: transform 0.22s ease;
+    border-color: rgba(0, 0, 0, 0.5);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    z-index: 10;
+  }
   #toggle {
     flex: 0 0 26px;
+    /* 내용이 길어도(100% 표시) 띠 폭은 26px로 고정한다 */
+    width: 26px;
+    min-width: 0;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1px;
+    /* 화살표와 사용량 항목 사이 */
+    gap: 7px;
+    padding: 8px 0;
     font-size: 14px;
     color: rgba(0, 0, 0, 0.55);
     border-right: 1px solid rgba(0, 0, 0, 0.08);
@@ -63,7 +78,8 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1px;
+    /* 항목(S, F, C) 사이 */
+    gap: 7px;
     font-size: 7.5px;
     line-height: 1.2;
     color: rgba(0, 0, 0, 0.5);
@@ -71,24 +87,30 @@
   #tPct:empty {
     display: none;
   }
+  /* 항목 하나 = 두 줄: [머리글자 %] 와 [리셋까지 남은 시간]. 항목 사이는
+     #tPct의 gap으로 띄운다 */
   #tPct .claude,
-  #tPct .model {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-  }
-  #tPct .model {
-    margin-top: 2px;
-  }
+  #tPct .model,
   #tPct .codex {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 0 2px;
+  }
+  #tPct .codex {
+    padding: 0;
     border: 1px solid rgba(0, 0, 0, 0.25);
     border-radius: 6px 3px 3px 6px;
   }
-  /* 접힌 띠의 항목 이름(5h, Fable)과 리셋까지 남은 시간 (예: 2h10m, 1d15h) */
+  #tPct .tRow {
+    display: flex;
+    align-items: baseline;
+    gap: 1px;
+    font-size: 7px;
+    letter-spacing: -0.3px;
+    white-space: nowrap;
+  }
+  /* 접힌 띠의 항목 머리글자(S 세션, F Fable, C Codex)와 리셋까지 남은 시간
+     (예: 2h10m, 1d15h) */
   #tPct .tLab,
   #tPct .tLeft {
     font-size: 6.5px;
@@ -100,7 +122,8 @@
     white-space: nowrap;
   }
   #tPct .tLab {
-    color: rgba(0, 0, 0, 0.3);
+    color: rgba(0, 0, 0, 0.35);
+    font-weight: 600;
   }
   /* 오래된 값(마지막 갱신 2시간 이상 전이거나 저장본): 흐리게 */
   #tPct .old,
@@ -514,11 +537,19 @@
   const usageEl = document.getElementById('usage');
   const cards = new Map();
   const GAP = 6;
+  // 도크 위쪽 여백: 패널의 기본 위치이자 패널과 카드가 올라갈 수 있는 상한
+  const TOP = 14;
   // 상태 변화 후 CSS 전환(0.25s)이 끝나고 나서 재측정하는 시점
   const SETTLE_MS = 320;
 
+  // down / drag 의 item 은 카드(c) 또는 컨트롤 패널(ctrlItem) 이다
   let down = null;
   let drag = null;
+  // 컨트롤 패널은 배치에서 카드와 같은 항목이다: 같은 드래그 문법(mousedown 뒤
+  // 세로 6px 이동 시 시작), 같은 겹침 해소, 같은 위아래 경계. 위치(baseY)는
+  // main의 ctrlY에 저장되고 상태 갱신 때마다 실려 온다
+  const ctrlItem = { el: ctrl, key: '__ctrl', ctrl: true, baseY: TOP, movedAt: 0 };
+  let ctrlDragged = false;
   let allOut = false;
   let opacity = 1;
   // 로컬에서 막 바꾼 값이 전송 중이던 옛 상태에 덮이지 않도록 잠시 지키는 시각
@@ -528,8 +559,18 @@
   // 바꾸지 않으므로 observer-layout 피드백 루프가 생기지 않는다.
   const cardResizeObserver = new ResizeObserver(() => layout());
 
-  function topMin() {
-    return ctrl.offsetTop + ctrl.offsetHeight + 10;
+  // 배치 대상 전부: 위치가 있는 카드들과 컨트롤 패널
+  function allItems() {
+    return [...cards.values()].filter((c) => c.baseY != null).concat([ctrlItem]);
+  }
+
+  function byY(a, b) {
+    return a.baseY - b.baseY || (a.key < b.key ? -1 : 1);
+  }
+
+  // 아래쪽 경계: 창 높이에서 아래 여백을 뺀 값
+  function bottomLimit() {
+    return document.documentElement.clientHeight - TOP;
   }
 
   // 도크 창은 평소 마우스 이벤트를 통과시킨다. forward 옵션으로 mousemove는
@@ -558,7 +599,7 @@
     if (c.state && c.state.front) reasons.push('front');
     if (c.settling) reasons.push('settling');
     if (c.hover && !c.suppressHover) reasons.push('hover');
-    if (drag && drag.card === c) reasons.push('drag');
+    if (drag && drag.item === c) reasons.push('drag');
     return reasons;
   }
 
@@ -767,32 +808,39 @@
       }
     }
     ctrl.classList.toggle('usageWarn', warn);
-    // 접힌 토글 아래에 상시 표시: 지금 쓰고 있는 세션(5시간 창) 사용량만.
-    // Claude 세션과, Codex에 세션 창 한도가 오는 플랜이면 그것도. 주간 한도
-    // (전체, Fable 등 모델별, Codex 주간)는 펼쳤을 때 행으로 본다
-    // (사용자 결정 2026-09-23: 접혔을 때는 당장 쓰는 것의 정보만).
-    // 각각 % 아래에 리셋까지 남은 시간을 붙인다
+    // 접힌 토글 아래에 상시 표시 (사용자 결정 2026-09-30): 위에서부터
+    //   S  Claude 세션(5시간 창)
+    //   F  Fable 모델별 주간 (Fable이 없으면 첫 모델 항목, 머리글자는 모델명)
+    //   C  Codex (세션 창 한도가 오는 플랜이면 그것, 아니면 주간)
+    // 각 항목은 [머리글자 %] 한 줄과 리셋까지 남은 시간 한 줄이다. 띠 폭(26px)은
+    // 그대로이므로 글자는 머리글자 하나로 줄인다. 전체 주간(Claude 주간)은
+    // 펼쳤을 때 행으로 본다
     tPct.innerHTML = '';
     const session = has ? list.find((u) => u.key === 'session') : null;
-    const codex = has
+    const models = has ? list.filter((u) => u.agent !== 'codex' && /^model:/.test(u.key)) : [];
+    const model = models.find((u) => /fable/i.test(u.label)) || models[0] || null;
+    const codexSession = has
       ? list.find((u) => u.agent === 'codex' && u.windowMinutes > 0 && u.windowMinutes <= 300)
       : null;
-    // 접힌 띠: % 아래에 리셋까지 남은 시간을 짧게 붙인다 (요청: 얼마나 남았고
-    // 언제 리셋되는지를 펼치지 않아도 알 수 있게)
+    const codexWeekly = has ? list.find((u) => u.agent === 'codex' && u.windowMinutes === 10080) : null;
+    const codex = codexSession || codexWeekly;
     const strip = (u, cls, lab) => {
       const wrap = document.createElement('span');
       wrap.className = cls + (isOld(u) ? ' old' : '');
       const reset = u.resetsAt ? new Date(u.resetsAt) : null;
       wrap.title = rowTitle(u, reset);
+      const row = document.createElement('span');
+      row.className = 'tRow';
       if (lab) {
         const l = document.createElement('span');
         l.className = 'tLab';
         l.textContent = lab;
-        wrap.appendChild(l);
+        row.appendChild(l);
       }
       const pct = document.createElement('span');
       pct.textContent = u.percent + '%';
-      wrap.appendChild(pct);
+      row.appendChild(pct);
+      wrap.appendChild(row);
       const left = reset ? fmtLeft(reset) : '';
       if (left) {
         const l = document.createElement('span');
@@ -802,8 +850,9 @@
       }
       tPct.appendChild(wrap);
     };
-    if (session) strip(session, 'claude', '');
-    if (codex) strip(codex, 'codex', '');
+    if (session) strip(session, 'claude', 'S');
+    if (model) strip(model, 'model', (model.label || 'M').trim().charAt(0).toUpperCase() || 'M');
+    if (codex) strip(codex, 'codex', 'C');
     layout();
   }
 
@@ -894,6 +943,11 @@
   }
 
   toggle.addEventListener('click', () => {
+    // 패널을 끌다 놓은 mouseup에 따라오는 click은 토글이 아니다
+    if (ctrlDragged) {
+      ctrlDragged = false;
+      return;
+    }
     const before = { ctrl: ctrlSnapshot(), cards: [...cards.values()].map(cardSnapshot) };
     // 커서는 토글 위에 있으므로 어떤 카드도 hover일 수 없다
     clearHovers();
@@ -918,71 +972,116 @@
     applyGlobalOpacity();
   });
 
-  // 화면 표시용 배치: 카드는 저장 위치(baseY)를 그대로 쓴다. 알림으로
-  // 카드가 제자리에서 커져 아래 카드와 겹치면 화면에서만 아래로 민다.
-  // 저장 위치는 건드리지 않아 알림이 풀리면 모두 제자리로 돌아온다.
-  // 드래그 중인 카드는 건드리지 않는다. 알림 사이의 순서(최신 우선)는
-  // 위치가 아니라 글로우와 전역 단축키 대상 선정에만 쓰인다.
+  // 화면 표시용 배치: 카드와 패널은 저장 위치(baseY)를 그대로 쓴다. 알림으로
+  // 카드가 제자리에서 커져 아래 항목과 겹치면 화면에서만 아래로 밀고, 그래서
+  // 아래 여백을 넘게 되면 다시 위로 되민다 (아래로 사라지지 않게). 저장
+  // 위치는 건드리지 않아 알림이 풀리면 모두 제자리로 돌아온다. 드래그 중인
+  // 항목은 건드리지 않는다. 알림 사이의 순서(최신 우선)는 위치가 아니라
+  // 글로우와 전역 단축키 대상 선정에만 쓰인다.
   function layout() {
-    const items = [...cards.values()]
-      .filter((c) => c.baseY != null && !(drag && drag.card === c))
-      .sort((a, b) => a.baseY - b.baseY || (a.el.dataset.key < b.el.dataset.key ? -1 : 1));
-    let cursor = topMin();
-    for (const c of items) {
-      const y = Math.max(c.baseY, cursor);
-      c.el.style.top = y + 'px';
-      cursor = y + c.el.offsetHeight + GAP;
+    // 패널을 끄는 동안: 지금 위치에 놓는다고 치고 같은 겹침 해소를 미리 계산해
+    // 카드들이 실시간으로 비켜 준다 (패널이 메인이라는 느낌). 화면에만
+    // 반영하고 저장 위치는 놓을 때 확정한다. 패널 자체는 커서를 따라간다
+    if (drag && drag.item.ctrl) {
+      const { seq, ys } = arrange(drag.item, parseFloat(drag.item.el.style.top) || TOP, drag.pivot);
+      seq.forEach((o, i) => {
+        if (o !== drag.item) o.el.style.top = ys[i] + 'px';
+      });
+      return;
     }
+    const items = allItems().filter((o) => !(drag && drag.item === o)).sort(byY);
+    const ys = squeeze(items, items.map((o) => o.baseY));
+    items.forEach((o, i) => {
+      o.el.style.top = ys[i] + 'px';
+    });
   }
 
-  // 드랍 시 겹침 해소. 놓는 카드(c)를 y에 두는 것을 기준으로:
-  // 1) 중심이 위인 카드들은 겹치는 만큼 위로 연쇄해서 밀어낸다
-  //    (이 단계에서는 컨트롤 패널 영역 침범을 허용한다)
-  // 2) [위쪽 카드들, 놓는 카드, 아래쪽 카드들] 순서로 위에서부터 훑으며
-  //    컨트롤 패널 아래(topMin)부터 차례로 자리를 보장한다. 위쪽 연쇄가
-  //    패널을 침범했다면 여기서 다시 아래로 밀리면서, 놓는 카드조차
-  //    아래로 밀려나는 요구 동작이 자연스럽게 나온다.
-  // 바뀐 위치는 전부 저장한다.
-  function resolveDrop(c, y) {
-    const MIN = topMin();
+  // 위에서부터 순서대로 자리를 보장한다: 위쪽 여백(TOP)부터 시작해 앞 항목과
+  // 겹치면 아래로 민다. 그 결과 마지막 항목이 아래 여백을 넘으면 아래에서부터
+  // 거꾸로 훑으며 위로 되밀고, 그래도 전체가 창보다 크면 위쪽 여백이 이긴다.
+  // seq 순서를 유지하며 새 y 배열을 돌려준다 (저장 위치는 건드리지 않는다)
+  function squeeze(seq, ys) {
+    const hs = seq.map((o) => o.el.offsetHeight);
+    const out = ys.slice();
+    const down = () => {
+      let cursor = TOP;
+      for (let i = 0; i < out.length; i++) {
+        out[i] = Math.max(out[i], cursor);
+        cursor = out[i] + hs[i] + GAP;
+      }
+    };
+    down();
+    let limit = bottomLimit();
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i] + hs[i] > limit) out[i] = limit - hs[i];
+      limit = out[i] - GAP;
+    }
+    down();
+    return out;
+  }
+
+  // 밀려난 항목의 위치를 저장한다 (카드는 setY 묶음으로, 패널은 setCtrlY로)
+  function saveMoved(items, oldY) {
+    const changed = {};
+    for (const o of items) {
+      if (o.baseY === oldY.get(o)) continue;
+      o.movedAt = Date.now();
+      if (o.ctrl) window.api.setCtrlY(o.baseY);
+      else changed[o.key] = o.baseY;
+    }
+    if (Object.keys(changed).length) window.api.setY(changed);
+  }
+
+  // 겹침 해소 계산 (순수 함수: 저장 위치를 바꾸지 않는다). 카드와 패널이 같은
+  // 규칙을 쓴다. 항목(c)을 y에 두는 것을 기준으로 (y는 먼저 창의 위아래 여백
+  // 안으로 눌러진다):
+  // 1) 중심이 위인 항목들은 겹치는 만큼 위로 연쇄해서 밀어낸다
+  //    (이 단계에서는 위쪽 여백 침범을 허용한다)
+  // 2) [위쪽 항목들, 놓는 항목, 아래쪽 항목들] 순서로 squeeze: 위에서부터
+  //    자리를 보장하고 아래 여백을 넘으면 위로 되민다. 위쪽 연쇄가 여백을
+  //    침범했다면 여기서 다시 아래로 밀리면서, 놓는 항목조차 밀려나는
+  //    동작이 자연스럽게 나온다.
+  // 위아래 판정 기준(pivot)은 기본으로 항목의 중심(눌러지기 전 y 기준이라
+  // 화면 밖까지 끌면 그만큼 더 지난 것으로 본다). 패널 드래그는 방향에 따라
+  // 중심과 커서 중 먼저 지난 쪽을 pivot으로 넘긴다 (dragPivot 참고).
+  // 드랍(resolveDrop)은 결과를 저장하고, 패널 드래그 중의 layout은 화면에만 쓴다
+  function arrange(c, y, pivot) {
     const h = c.el.offsetHeight;
-    y = Math.max(MIN, y);
-    const myCenter = y + h / 2;
-    const others = [...cards.values()].filter((o) => o !== c && o.baseY != null);
-    const above = others.filter((o) => o.baseY + o.el.offsetHeight / 2 <= myCenter);
-    const below = others.filter((o) => o.baseY + o.el.offsetHeight / 2 > myCenter);
+    const myCenter = pivot == null ? y + h / 2 : pivot;
+    y = Math.max(TOP, Math.min(y, bottomLimit() - h));
+    const others = allItems().filter((o) => o !== c);
+    const pos = new Map(others.map((o) => [o, o.baseY]));
+    pos.set(c, y);
+    const cmp = (a, b) => pos.get(a) - pos.get(b) || (a.key < b.key ? -1 : 1);
+    const above = others.filter((o) => pos.get(o) + o.el.offsetHeight / 2 <= myCenter);
+    const below = others.filter((o) => pos.get(o) + o.el.offsetHeight / 2 > myCenter);
 
-    const oldY = new Map(others.map((o) => [o, o.baseY]));
-    c.baseY = y;
-
-    // 1) 위쪽 연쇄: 놓는 카드에 가까운 것부터, 겹치면 위로 올린다
-    above.sort((a, b) => b.baseY - a.baseY);
+    // 1) 위쪽 연쇄: 놓는 항목에 가까운 것부터, 겹치면 위로 올린다
+    above.sort((a, b) => cmp(b, a));
     let limit = y - GAP;
     for (const o of above) {
       const oh = o.el.offsetHeight;
-      if (o.baseY + oh > limit) o.baseY = limit - oh;
-      limit = o.baseY - GAP;
+      if (pos.get(o) + oh > limit) pos.set(o, limit - oh);
+      limit = pos.get(o) - GAP;
     }
 
-    // 2) 위에서부터 아래로 자리 보장 (놓는 카드의 의도된 순서 유지)
-    above.sort((a, b) => a.baseY - b.baseY);
-    below.sort((a, b) => a.baseY - b.baseY);
+    // 2) 순서를 유지한 채 위아래 여백 안으로 자리 보장
+    above.sort(cmp);
+    below.sort(cmp);
     const seq = above.concat([c], below);
-    let cursor = MIN;
-    for (const o of seq) {
-      if (o.baseY < cursor) o.baseY = cursor;
-      cursor = o.baseY + o.el.offsetHeight + GAP;
-    }
+    const ys = squeeze(seq, seq.map((o) => pos.get(o)));
+    return { seq, ys };
+  }
 
-    const changed = { [c.el.dataset.key]: c.baseY };
+  // 드랍: 겹침 해소 결과를 저장 위치로 확정하고 바뀐 것을 전부 저장한다
+  function resolveDrop(c, y, pivot) {
+    const { seq, ys } = arrange(c, y, pivot);
+    const oldY = new Map(seq.map((o) => [o, o === c ? null : o.baseY]));
+    seq.forEach((o, i) => {
+      o.baseY = ys[i];
+    });
     c.movedAt = Date.now();
-    for (const o of others) {
-      if (o.baseY !== oldY.get(o)) {
-        o.movedAt = Date.now();
-        changed[o.el.dataset.key] = o.baseY;
-      }
-    }
-    window.api.setY(changed);
+    saveMoved(seq, oldY);
     layout();
   }
 
@@ -999,6 +1098,7 @@
       '<div class="x" title="알림만 닫기 (창 전환 없음)">✕</div>';
     const c = {
       el,
+      key,
       name: el.querySelector('.name'),
       msg: el.querySelector('.msg'),
       desc: el.querySelector('.desc'),
@@ -1021,9 +1121,11 @@
       window.api.menu(key);
     });
 
+    // 드래그 판정 기준은 clientY: 도크 창은 움직이지 않으므로 screenY와 같고,
+    // 합성 입력(테스트)에서도 값이 들어온다
     el.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
-      down = { c, y: e.screenY };
+      down = { item: c, y: e.clientY, offsetY: e.clientY - el.getBoundingClientRect().top };
     });
 
     // x 버튼: 카드 클릭(창 전환)과 드래그로 번지지 않게 mousedown부터 끊고,
@@ -1041,32 +1143,64 @@
     return c;
   }
 
-  // 드래그 시작: 카드가 커서를 그대로 따라간다. 다른 카드는 놓기 전까지
-  // 움직이지 않고, 놓는 순간 resolveDrop이 밀어낸다.
-  function startDrag(c, e) {
-    const r = c.el.getBoundingClientRect();
-    drag = { card: c, offsetY: e.clientY - r.top };
-    c.el.classList.add('dragging');
-    c.el.style.top = r.top + 'px';
-    applyOut(c);
+  // 드래그 시작: 항목(카드나 패널)이 커서를 그대로 따라간다. 잡은 지점은
+  // mousedown 때의 위치라, 판정 거리(6px)만큼 움직인 뒤 시작해도 항목이 커서를
+  // 따라잡는다. 화면 밖까지도 따라가며, 다른 항목은 놓기 전까지 움직이지 않고
+  // 놓는 순간 resolveDrop이 창 안으로 되돌리고 밀어낸다.
+  function startDrag(item, offsetY, clientY) {
+    drag = { item, offsetY, lastY: clientY, down: clientY > down.y, pivot: null };
+    item.el.classList.add('dragging');
+    item.el.style.top = clientY - offsetY + 'px';
+    if (item.ctrl) {
+      ctrlDragged = true;
+      dragPivot(clientY);
+    } else applyOut(item);
+  }
+
+  // 패널 드래그의 위아래 판정 기준. 패널은 카드보다 훨씬 커서 중심만 보면
+  // 화면 끝에 닿은 채로는 작은 카드를 넘지 못한다 (커서가 화면 밖으로 못
+  // 나가므로 패널 중심이 카드 중심을 지나지 못한다). 그래서 끄는 방향으로
+  // 패널 중심과 커서 중 먼저 카드 중심을 지난 쪽을 기준으로 삼는다:
+  // 아래로 끌 때는 둘 중 아래쪽, 위로 끌 때는 둘 중 위쪽. 놓을 때도 마지막
+  // 기준을 그대로 써서 미리보기와 저장 결과가 같다
+  function dragPivot(clientY) {
+    if (clientY > drag.lastY) drag.down = true;
+    else if (clientY < drag.lastY) drag.down = false;
+    drag.lastY = clientY;
+    const center = clientY - drag.offsetY + drag.item.el.offsetHeight / 2;
+    drag.pivot = drag.down ? Math.max(center, clientY) : Math.min(center, clientY);
   }
 
   function endDrag() {
-    const c = drag.card;
-    const y = parseFloat(c.el.style.top) || topMin();
-    c.el.classList.remove('dragging');
+    const item = drag.item;
+    const pivot = drag.pivot;
+    const y = parseFloat(item.el.style.top);
+    item.el.classList.remove('dragging');
     drag = null;
-    applyOut(c);
-    resolveDrop(c, y);
+    if (!item.ctrl) applyOut(item);
+    resolveDrop(item, isFinite(y) ? y : TOP, pivot);
   }
+
+  // 패널 드래그: 슬라이더를 제외한 어디를 잡아도 된다. 클릭(토글)과의 구분은
+  // 카드와 같은 6px 규칙이고, 끌다 놓은 뒤 따라오는 click은 토글이 무시한다
+  ctrl.addEventListener('mousedown', (e) => {
+    ctrlDragged = false;
+    if (e.button !== 0 || e.target === opSlider) return;
+    down = { item: ctrlItem, y: e.clientY, offsetY: e.clientY - ctrl.getBoundingClientRect().top };
+  });
 
   document.addEventListener('mousemove', (e) => {
     if (drag) {
-      drag.card.el.style.top = e.clientY - drag.offsetY + 'px';
+      drag.item.el.style.top = e.clientY - drag.offsetY + 'px';
+      // 패널을 끌 때는 카드들이 실시간으로 비켜 준다
+      if (drag.item.ctrl) {
+        dragPivot(e.clientY);
+        layout();
+      }
       return;
     }
-    if (down && Math.abs(e.screenY - down.y) > 6) {
-      startDrag(down.c, e);
+    if (down && Math.abs(e.clientY - down.y) > 6) {
+      startDrag(down.item, down.offsetY, e.clientY);
       return;
     }
     const overCard = e.target.closest('.card');
@@ -1076,22 +1210,29 @@
 
   document.addEventListener('mouseup', () => {
     if (drag) endDrag();
-    else if (down) {
+    else if (down && !down.item.ctrl) {
       // 알림 카드를 클릭하면 알림이 해소되면서 카드가 바로 안으로 들어간다
-      if (down.c.state && down.c.state.alert) down.c.suppressHover = true;
-      window.api.focus(down.c.el.dataset.key);
+      const c = down.item;
+      if (c.state && c.state.alert) c.suppressHover = true;
+      window.api.focus(c.key);
     }
     down = null;
   });
 
   document.documentElement.addEventListener('mouseleave', () => {
     if (drag) endDrag();
+    down = null;
     clearHovers();
     setCapture(false);
   });
 
+  // 디스플레이 구성이 바뀌어 창 높이가 달라지면 창 안으로 다시 배치한다
+  window.addEventListener('resize', () => layout());
+
   window.api.onState((state) => {
     const list = state.cards || [];
+    // 막 놓은 패널은 저장이 도는 중이므로 옛 값이 덮지 않게 잠시 보호한다
+    if (typeof state.ctrlY === 'number' && Date.now() - ctrlItem.movedAt > 2000) ctrlItem.baseY = state.ctrlY;
     renderUsage(state.usage);
     // 첫 상태 수신은 기준값 기록만 하고, 이후 pulse 값 변화만 알림으로 본다
     if (state.usagePulse !== lastPulse) {
@@ -1171,28 +1312,34 @@
     }
     for (const [key, c] of [...cards]) {
       if (!seen.has(key)) {
-        if (drag && drag.card === c) {
+        if (drag && drag.item === c) {
           drag = null;
           c.el.classList.remove('dragging');
         }
+        if (down && down.item === c) down = null;
         cardResizeObserver.unobserve(c.el);
         c.el.remove();
         cards.delete(key);
       }
     }
-    // 위치가 없는 새 카드는 기존 카드들 아래 빈자리에 차례로 배치하고 저장한다
+    // 위치가 없는 새 카드는 기존 항목들(패널 포함) 아래 빈자리에 차례로 배치하고
+    // 저장한다. 아래 여백을 넘으면 squeeze가 전체를 위로 되밀어 자리를 만든다
     if (fresh.length) {
-      let bottom = topMin();
-      for (const c of cards.values()) {
-        if (c.baseY != null) bottom = Math.max(bottom, c.baseY + c.el.offsetHeight + GAP + 2);
+      let bottom = TOP;
+      for (const o of allItems()) {
+        if (!fresh.includes(o)) bottom = Math.max(bottom, o.baseY + o.el.offsetHeight + GAP + 2);
       }
-      const assigned = {};
       for (const c of fresh) {
         c.baseY = bottom;
-        assigned[c.el.dataset.key] = bottom;
         bottom += c.el.offsetHeight + GAP + 2;
       }
-      window.api.setY(assigned);
+      const seq = allItems().sort(byY);
+      const oldY = new Map(seq.map((o) => [o, fresh.includes(o) ? null : o.baseY]));
+      const ys = squeeze(seq, seq.map((o) => o.baseY));
+      seq.forEach((o, i) => {
+        o.baseY = ys[i];
+      });
+      saveMoved(seq, oldY);
     }
     layout();
     // 전환이 끝난 뒤 최종 크기로 접힘 거리와 배치를 확정한다

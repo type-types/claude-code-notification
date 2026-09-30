@@ -8,6 +8,8 @@ const DEFAULTS = {
   idleGlow: true,
   soundPath: '/System/Library/Sounds/Glass.aiff',
   cardY: {},
+  // 컨트롤 패널의 세로 위치 (자동 관리). 드래그로 옮기면 저장된다
+  ctrlY: 14,
   opacity: 1,
   // 사용량 API가 429로 차단됐을 때 다음 조회를 허용하는 시각(epoch ms).
   // 껐다 켜도 유지되어 재시작이 차단 페널티를 리셋시키지 않게 한다.

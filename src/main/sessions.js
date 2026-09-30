@@ -453,6 +453,13 @@ class Sessions extends EventEmitter {
     this.cfg.set('cardY', cur);
   }
 
+  // 컨트롤 패널 세로 위치. 카드 위치와 같은 이유로 저장만 한다
+  setCtrlY(v) {
+    v = Number(v);
+    if (!isFinite(v)) return;
+    this.cfg.set('ctrlY', Math.max(0, Math.round(v)));
+  }
+
   // 카드 투명도(0.2 ~ 1). 적용은 renderer가 즉시 하므로 저장만 한다.
   setOpacity(v) {
     v = Number(v);
@@ -523,7 +530,7 @@ class Sessions extends EventEmitter {
     return target;
   }
 
-  // 도크로 보낼 전체 카드 목록. 저장된 세로 위치(y)와 투명도를 함께 싣는다.
+  // 도크로 보낼 전체 카드 목록. 저장된 세로 위치(y), 패널 위치, 투명도를 함께 싣는다.
   // 위치가 없는 새 카드는 y: null로 보내고 renderer가 빈자리에 배치한다.
   refresh() {
     const names = computeDisplayNames([...new Set([...this.map.values()].map((s) => s.cwd))]);
@@ -552,8 +559,10 @@ class Sessions extends EventEmitter {
       stale: !s.alert && now - s.lastEvent > STALE_MS,
       y: typeof ys[s.key] === 'number' ? ys[s.key] : null,
     }));
+    const ctrlY = this.cfg.get('ctrlY');
     this.dock.send({
       cards,
+      ctrlY: typeof ctrlY === 'number' && isFinite(ctrlY) ? ctrlY : 14,
       opacity: this.cfg.get('opacity') || 1,
       usage: this.usage,
       usagePulse: this.usagePulse || 0,
