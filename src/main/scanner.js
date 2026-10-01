@@ -126,9 +126,12 @@ class Scanner {
       this.sessions.map.get(key) ||
       [...this.sessions.map.values()].find((c) => c.agent === e.agent && c.cwd === e.cwd && !c.origin);
     if (!s || s.origin) return;
+    // 접미사 카드를 찾았으면 그 카드의 키로 저장해야 한다 (기본 키로 저장하면
+    // 이미 출처가 있는 기본 카드에 막혀 접미사 카드는 영영 출처가 비었다)
+    const target = s.key;
     const cached = this.originCache.get(e.pid);
     if (cached) {
-      this.sessions.setOrigin(key, cached);
+      this.sessions.setOrigin(target, cached);
       return;
     }
     execFile('/bin/ps', ['eww', '-o', 'command=', '-p', String(e.pid)], (err, out) => {
@@ -140,7 +143,7 @@ class Scanner {
       if (bm) origin.bundleId = bm[1];
       if (!origin.termProgram && !origin.bundleId) return;
       this.originCache.set(e.pid, origin);
-      this.sessions.setOrigin(key, origin);
+      this.sessions.setOrigin(target, origin);
     });
   }
 }

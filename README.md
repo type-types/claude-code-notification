@@ -81,6 +81,7 @@ open "dist/mac-arm64/CC Notify.app"
 Codex 앱(Codex.app)은 스레드 전부를 app-server 프로세스 하나로 돌려서 프로세스 스캔으로는 세션을 알 수 없습니다. 대신 Codex가 스레드마다 쓰는 세션 기록(`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`)을 감시합니다.
 
 - 첫 줄 session_meta의 originator가 "Codex Desktop" 계열이면 앱 스레드로 보고, cwd로 카드를 만듭니다. CLI 스레드(originator codex-tui)는 hook과 프로세스 스캔이 맡으므로 여기서는 무시합니다.
+- 서브에이전트 스레드는 카드를 만들지 않습니다. Codex 0.159부터 사용자 스레드가 띄우는 서브에이전트도 기록 파일을 따로 쓰는데(session_meta의 thread_source "subagent", parent_thread_id), 코드 리뷰 한 번에 15장이 생기던 문제를 2026-10-01에 고쳤습니다. 서브에이전트가 도는 동안은 부모 스레드 카드가 작업 중으로 보입니다.
 - 턴마다 기록되는 task_started, task_complete, turn_aborted로 작업 중(보라 숨쉬기), 작업 완료(초록, 소요 시간 포함), 중단을 표시합니다. 완료 알림은 다음 턴을 시작하거나 카드를 클릭하면 사라집니다.
 - 카드 클릭은 Codex 앱을 앞으로 가져옵니다. 카드 툴팁의 출처는 "Codex 앱"입니다.
 - 마지막 활동이 3시간 지난 스레드와 보관(archive)된 스레드의 카드는 사라집니다. 앱 시작 시 이미 있던 기록은 상태만 복원하고 지난 완료 알림을 다시 울리지 않습니다.

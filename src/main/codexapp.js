@@ -14,6 +14,15 @@ const { sessionIdKey } = require('./sessions');
 // task_started(started_at), task_complete, turn_aborted가 기록된다. 허용
 // 요청은 파일에 남지 않으므로 그것은 hook(앱에서 실행될 경우)에 맡긴다.
 //
+// 서브에이전트 (codex 0.159 multi_agent v2, 2026-10-01 실측): 사용자 스레드가
+// 띄우는 서브에이전트도 스레드마다 rollout 파일을 따로 쓴다. session_meta에
+// thread_source "subagent", source {subagent: {thread_spawn: ...}},
+// parent_thread_id가 있고 originator와 cwd는 부모와 같다 (사용자 스레드는
+// thread_source "user", source "vscode"). 코드 리뷰 한 번에 서브에이전트 15개가
+// 돌아 카드 15장과 완료 알림 15번이 생겼으므로, 서브에이전트 파일은 카드로
+// 만들지 않는다. 부모 스레드의 턴이 서브에이전트가 도는 동안 계속 작업 중으로
+// 기록되므로 부모 카드만으로 진행 상태가 보인다.
+//
 // 파일 이벤트를 세션 이벤트로 바꿔 Sessions.handleEvent로 흘려보내므로 카드
 // 상태 규칙(작업 중, 완료, 해소)은 hook 경로와 같다. 카드 클릭은 origin의
 // bundle id로 Codex 앱을 앞으로 가져온다.
@@ -29,6 +38,15 @@ const BUNDLE_ID = 'com.openai.codex';
 
 function isDesktop(originator) {
   return /desktop/i.test(String(originator || ''));
+}
+
+// session_meta payload가 서브에이전트 스레드의 것인지. 세 가지 표식 중 하나라도
+// 있으면 서브에이전트로 본다 (버전에 따라 일부만 있을 수 있다)
+function isSubagent(p) {
+  if (!p || typeof p !== 'object') return false;
+  if (p.thread_source === 'subagent') return true;
+  if (p.parent_thread_id) return true;
+  return !!(p.source && typeof p.source === 'object' && p.source.subagent);
 }
 
 class CodexRollouts {
@@ -151,6 +169,10 @@ class CodexRollouts {
     if (!meta || !isDesktop(meta.originator) || !meta.cwd) {
       return { ignored: true };
     }
+    if (meta.subagent) {
+      diag.log('codexapp', 'subagent thread ignored', { id: meta.id, parent: meta.parent, cwd: meta.cwd });
+      return { ignored: true };
+    }
     const st = {
       file: f.file,
       id: meta.id,
@@ -188,7 +210,14 @@ class CodexRollouts {
       const obj = JSON.parse(text.slice(0, nl));
       if (!obj || obj.type !== 'session_meta' || !obj.payload) return null;
       const p = obj.payload;
-      return { id: p.id || p.session_id || '', cwd: p.cwd || '', originator: p.originator || '' };
+      // 서브에이전트 파일의 session_id는 루트 스레드의 id라서 id를 먼저 쓴다
+      return {
+        id: p.id || p.session_id || '',
+        cwd: p.cwd || '',
+        originator: p.originator || '',
+        subagent: isSubagent(p),
+        parent: p.parent_thread_id || '',
+      };
     } catch (e) {
       return null;
     }
@@ -272,4 +301,5 @@ class CodexRollouts {
 
 module.exports = CodexRollouts;
 module.exports.isDesktop = isDesktop;
+module.exports.isSubagent = isSubagent;
 module.exports.BUNDLE_ID = BUNDLE_ID;
